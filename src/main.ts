@@ -16,7 +16,11 @@ async function bootstrap() {
     forbidNonWhitelisted: true,
   }));
 
-  await app.listen(3000);
-  console.log('OrchaLite is running on http://localhost:3000');
+  // Lets AppModule close the MongoDB connection on SIGINT/SIGTERM
+  app.enableShutdownHooks();
+
+  const port = Number(process.env.PORT) || 3000;
+  await app.listen(port);
+  console.log(`OrchaLite is running on http://localhost:${port}`);
 }
 bootstrap();

@@ -1,7 +1,8 @@
-import { Injectable, BadRequestException } from '@nestjs/common';
+import { Injectable, BadRequestException, InternalServerErrorException } from '@nestjs/common';
 import { CreateWorkflowDto } from './dto/create-workflow.dto';
-import { runWorkflow, WorkflowResults } from '../orchestrator/task-runner.util';
+import { runWorkflow, WorkflowDefinitionError, WorkflowResults } from '../orchestrator/task-runner.util';
 import { taskRegistry } from '../tasks/task-registry';
+import { TaskExecutionError } from '../tasks/task.interface';
 import { validate } from 'class-validator';
 import { plainToClass } from 'class-transformer';
 
@@ -42,6 +43,22 @@ export class WorkflowService {
       return results;
     } catch (error) {
       console.error('Workflow execution failed:', error);
+
+      if (error instanceof WorkflowDefinitionError) {
+        throw new BadRequestException({
+          message: 'Invalid workflow definition',
+          errors: error.issues
+        });
+      }
+
+      if (error instanceof TaskExecutionError) {
+        throw new InternalServerErrorException({
+          message: error.message,
+          stepId: error.taskId,
+          task: error.taskName
+        });
+      }
+
       throw error;
     }
   }

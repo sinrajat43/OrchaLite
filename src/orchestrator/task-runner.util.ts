@@ -12,10 +12,70 @@ export interface WorkflowResults {
 }
 
 /**
+ * Error thrown when a workflow definition is not a valid DAG
+ */
+export class WorkflowDefinitionError extends Error {
+  constructor(public readonly issues: string[]) {
+    super(`Invalid workflow definition: ${issues.join('; ')}`);
+    this.name = 'WorkflowDefinitionError';
+  }
+}
+
+/**
+ * Checks that steps have unique ids, known dependencies and no cycles
+ * @param steps - Array of workflow steps
+ * @throws WorkflowDefinitionError if the steps do not form a valid DAG
+ */
+export function validateWorkflow(steps: WorkflowStep[]): void {
+  const issues: string[] = [];
+  const ids = new Set<string>();
+
+  for (const step of steps) {
+    if (ids.has(step.id)) {
+      issues.push(`Duplicate step id "${step.id}"`);
+    }
+    ids.add(step.id);
+  }
+
+  for (const step of steps) {
+    for (const depId of step.dependsOn) {
+      if (!ids.has(depId)) {
+        issues.push(`Step "${step.id}" depends on unknown step "${depId}"`);
+      }
+    }
+  }
+
+  if (issues.length === 0) {
+    // Repeatedly resolve steps whose dependencies are resolved; leftovers are in a cycle
+    const resolved = new Set<string>();
+    let progressed = true;
+    while (progressed) {
+      progressed = false;
+      for (const step of steps) {
+        if (!resolved.has(step.id) && step.dependsOn.every(dep => resolved.has(dep))) {
+          resolved.add(step.id);
+          progressed = true;
+        }
+      }
+    }
+
+    const unresolved = steps.filter(s => !resolved.has(s.id)).map(s => s.id);
+    if (unresolved.length > 0) {
+      issues.push(`Circular dependency involving steps: ${unresolved.join(', ')}`);
+    }
+  }
+
+  if (issues.length > 0) {
+    throw new WorkflowDefinitionError(issues);
+  }
+}
+
+/**
  * Executes a workflow defined as a DAG of tasks
  * @param steps - Array of workflow steps
  * @param taskRegistry - Registry of available tasks
  * @returns Promise resolving to workflow results
+ * @throws WorkflowDefinitionError if the steps do not form a valid DAG
  * @throws TaskExecutionError if workflow execution fails
  */
 export async function runWorkflow(
@@ -25,6 +85,8 @@ export async function runWorkflow(
   const results: WorkflowResults = {};
   const visited = new Set<string>();
   const errors: TaskExecutionError[] = [];
+
+  validateWorkflow(steps);
 
   console.log('Starting workflow execution...');
 
@@ -40,7 +102,7 @@ export async function runWorkflow(
       // }, TASK_TIMEOUT_MS);
 
       const inputs = step.dependsOn.map(depId => {
-        if (!results[depId]) {
+        if (!visited.has(depId)) {
           throw new TaskExecutionError(
             step.id,
             step.task,
@@ -75,7 +137,12 @@ export async function runWorkflow(
     } catch (error) {
       const taskError = error instanceof TaskExecutionError
         ? error
-        : new TaskExecutionError(step.id, step.task, 'Task execution failed', error as Error);
+        : new TaskExecutionError(
+            step.id,
+            step.task,
+            `Task execution failed: ${(error as Error)?.message ?? error}`,
+            error as Error
+          );
       
       errors.push(taskError);
       console.error(`Task execution failed: ${step.task} (${step.id})`, taskError);
@@ -86,6 +153,7 @@ export async function runWorkflow(
   try {
     const stepMap = Object.fromEntries(steps.map(s => [s.id, s]));
     const queue = steps.filter(s => s.dependsOn.length === 0).map(s => s.id);
+    const queued = new Set<string>(queue);
 
     // TODO: Add workflow execution status tracking
     // const workflowStatus = {
@@ -104,8 +172,9 @@ export async function runWorkflow(
       await runStep(step);
 
       for (const s of steps) {
-        if (s.dependsOn.every(dep => visited.has(dep)) && !visited.has(s.id)) {
+        if (s.dependsOn.every(dep => visited.has(dep)) && !queued.has(s.id)) {
           queue.push(s.id);
+          queued.add(s.id);
         }
       }
     }

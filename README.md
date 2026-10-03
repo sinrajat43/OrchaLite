@@ -129,7 +129,7 @@ Filters repositories based on star count.
 Stores repository data in MongoDB.
 
 **Parameters:**
-- `collectionName` (optional): MongoDB collection name (default: "default")
+- `collectionName` (optional): MongoDB collection name; letters, digits, `_` and `-` only (default: "repos")
 
 ## API Endpoints
 

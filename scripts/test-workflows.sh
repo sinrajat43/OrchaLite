@@ -63,7 +63,6 @@ curl -X POST http://localhost:3000/workflow/run \
        "steps": [
          {
            "id": "fetch",
-           "task": "fetchRepos",
            "dependsOn": []
          }
        ]

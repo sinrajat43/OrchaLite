@@ -1,5 +1,5 @@
 import { Task } from './task.interface';
-import { RepoModel } from '../schemas/repo.schema';
+import { getRepoModel } from '../schemas/repo.schema';
 import { Repo, StoreReposParams } from './types';
 
 export const storeRepos: Task<Repo[], void, StoreReposParams> = {
@@ -7,7 +7,7 @@ export const storeRepos: Task<Repo[], void, StoreReposParams> = {
     console.log("storeRepos.execute: received input (length):", input.length);
     console.log("storeRepos.execute: attempting to insert (input) into RepoModel...");
     try {
-      await RepoModel.create({
+      await getRepoModel(params?.collectionName).create({
         timestamp: new Date(),
         data: input
       });
