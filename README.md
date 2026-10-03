@@ -2,6 +2,8 @@
 
 A lightweight workflow orchestration engine built with NestJS that allows you to define and execute workflows as Directed Acyclic Graphs (DAGs) of tasks.
 
+Where the project is heading: [objective and roadmap](docs/objective.md) · [architecture diagrams](docs/architecture.md)
+
 ## Features
 
 - **DAG-based Workflow Execution**: Define workflows as a series of dependent tasks
