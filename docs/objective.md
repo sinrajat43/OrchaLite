@@ -7,7 +7,60 @@ log at the bottom. Diagrams of the current and target architecture are in
 
 Last updated: 2026-10-04
 
-## Objective
+The doc works at two levels:
+
+- The **north star** is the long-term direction. It is split into horizons and
+  is deliberately light on detail.
+- The **current objective** is what is being built now. It is horizon 1 of the
+  north star and has the detailed roadmap.
+
+## North star
+
+> Build a distributed durable-execution platform: a small Temporal or Step
+> Functions that runs as a cluster, serves several tenants, and loses no work
+> when nodes die.
+
+### Horizons
+
+Each horizon is usable on its own. Only the current one is planned in detail;
+later ones stay as one-line goals until they start, because their designs will
+change with what earlier horizons teach.
+
+| Horizon | What exists at the end | Architecture it covers |
+| --- | --- | --- |
+| **1. Single-node engine** (current, phases A and B below) | Generic tasks, durable runs, retries and sagas, on MongoDB | Plugin architecture, state machines, queues and leases, idempotency |
+| **2. Event-driven core** | Event-sourced run history, Kafka event stream and triggers, Cassandra storage adapter, a separate read store for searching runs | Event sourcing, CQRS, log-based messaging, query-first data modelling, change data capture |
+| **3. Clustered engine** | Several engine nodes sharing the load; runs are sharded across them and move when a node dies | Sharding and consistent hashing, leader election, fencing tokens, membership and rebalancing, durable timers at scale |
+| **4. Platform** | Tenants with auth and quotas; workers in any language over gRPC; app connectors with OAuth; a drag-and-connect editor | Multi-tenancy and isolation, rate limiting, API and SDK design, protocol versioning, upgrading workflows that are mid-run |
+| **5. Production-grade** | Kubernetes deployment, workers autoscaling on queue depth, dashboards and alerts, backup and restore | Capacity and autoscaling, SLOs, zero-downtime upgrades, chaos and load testing |
+
+Horizon 3 is the big step. Going from one engine node to several is where most
+of the hard distributed-systems problems are.
+
+### Finish line
+
+The north star is reached when this demo passes:
+
+- Start a three-node cluster and launch 100,000 workflows.
+- Kill nodes and workers at random while they run.
+- Every workflow finishes, with no side effect lost or duplicated, and the
+  dashboards show what happened.
+
+### Where Kafka and Cassandra fit
+
+Both arrive in horizon 2 as swappable backends behind the storage and queue
+interfaces built in horizon 1. Neither is needed for the load; they are here
+for what they teach.
+
+| | Good fit | Poor fit |
+| --- | --- | --- |
+| **Kafka** | Stream of run and step events (fed by the outbox from stage B5); triggers that start a workflow from a topic; a `kafka.publish` task | Dispatching steps to workers: no per-message acknowledgement, no delayed delivery, and one slow message blocks its partition |
+| **Cassandra** | Run history as an append-only event log partitioned by run id; high write volume; expiry of old runs with TTL | "Find all ready steps" or "list runs by status": every query needs its own table, and using a table as a queue is an anti-pattern |
+
+Port to them from a working MongoDB version rather than starting on them. The
+port is where the differences become visible.
+
+## Current objective (horizon 1)
 
 Turn OrchaLite into a small, general-purpose, durable **workflow orchestration
 engine**.
@@ -60,7 +113,10 @@ As of 2026-10-04:
   the value, several give an array. `params` are static.
 - Run state lives in memory. Nothing is persisted about a run, so a crash or
   client timeout loses it.
-- Jest specs cover the task runner and `filterRepos`.
+- `GET /workflow/tasks` lists the registered task names.
+- A single-page UI (`public/index.html`) offers a JSON editor with examples, a
+  live step graph with validation, and per-step results and errors.
+- Jest specs cover the task runner, the three tasks and the HTTP API.
 
 In short: a script runner with a DAG. It orders steps correctly but is neither
 general nor durable.
@@ -121,7 +177,7 @@ execute them under a lease. See diagrams 3 and 4 in
 
 ## Roadmap
 
-Two phases. Generality comes first because the task contract and wiring model
+This is the roadmap for horizon 1. Two phases. Generality comes first because the task contract and wiring model
 decide what a persisted step record has to store.
 
 ### Phase A: generality
@@ -230,15 +286,20 @@ closer.
 | **Webhook automation with rollback** (durable target) | receive event, enrich, act on two systems, undo the first if the second fails | B5 |
 | Long waits | send, wait three days, follow up | B2 (durable `delay`) |
 
-## Out of scope for now
+## Out of scope for horizon 1
+
+Several of these come back in later horizons, noted on each item.
 
 - **Arbitrary user code** (a `script` task). It needs sandboxing, which is a
   project of its own.
 - **Tasks in other languages or processes.** It needs a worker protocol over
-  the network.
-- **A visual editor or UI.** `GET /tasks` and the run endpoints are designed so
-  one could be added later.
-- **Multi-tenancy and authentication.** Single user, trusted network.
+  the network. Returns in horizon 4.
+- **A drag-and-connect editor.** The current UI edits JSON and draws the step
+  graph. `GET /tasks` with schemas and the run endpoints are designed so a
+  canvas editor could be added later. Returns in horizon 4.
+- **Multi-tenancy and authentication.** Single user, trusted network. Returns
+  in horizon 4.
+- **Kafka, Cassandra and running as a cluster.** Horizons 2 and 3.
 
 ## Open decisions
 
@@ -247,6 +308,8 @@ closer.
 | Expression language (needed for A2) | JSONata, JMESPath | JSONata: it reshapes data as well as querying it, so it also covers the `transform` task |
 | Schema library (needed for A1) | Zod, JSON Schema with Ajv, class-validator | Open. JSON Schema serialises cleanly for `GET /tasks`; Zod is nicer to write |
 | Where large step outputs live (needed for B1) | inline in `step_runs`, separate collection, object storage | Open |
+| Run history model (needed for B1) | mutable status documents, append-only events with status derived from them | Event-sourced: it is how Temporal works, and it suits MongoDB, Cassandra and Kafka alike, which keeps horizon 2 a port rather than a redesign |
+| Try Kafka as the step dispatch queue in B2 | yes as a side experiment, no | Open. Its limits with retries and delays are a useful lesson, but it is not the queue to keep |
 
 ## Decision log
 
@@ -256,3 +319,6 @@ closer.
 | 2026-10-04 | Declarative JSON definitions, not workflows as code | Smaller surface, validates at submit time, closest to the existing design |
 | 2026-10-04 | Generality (phase A) before durability (phase B) | The task contract and wiring model decide what a persisted step record stores |
 | 2026-10-04 | Use an existing expression language, not a custom one or `eval` | Safety, and the lesson is in integrating a DSL, not writing a parser |
+| 2026-10-04 | North star set: a distributed durable-execution platform in five horizons; the current objective becomes horizon 1 and is unchanged | Gives Kafka, Cassandra, clustering and multi-tenancy a place without widening the current work |
+| 2026-10-04 | Kafka and Cassandra come in horizon 2 as adapters, ported from a working MongoDB version | Learning the engine design and their constraints at the same time would slow both |
+| 2026-10-04 | Model on Step Functions (declarative, event-driven), not Airflow or a canvas-first product | The backend lessons are in the engine; a canvas is a layer on top and stays possible |
