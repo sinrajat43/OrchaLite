@@ -1,0 +1,622 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OrchaLite</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --border: #dfe3e8;
+    --text: #1c2430;
+    --muted: #667085;
+    --accent: #0f766e;
+    --accent-text: #ffffff;
+    --code-bg: #f1f3f6;
+    --node: #ffffff;
+    --edge: #98a2b3;
+    --ok: #15803d;
+    --ok-bg: #e7f6ec;
+    --bad: #b42318;
+    --bad-bg: #fdecea;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12161c;
+      --panel: #1a2029;
+      --border: #2c3542;
+      --text: #e6e9ee;
+      --muted: #98a2b3;
+      --accent: #2dd4bf;
+      --accent-text: #06231f;
+      --code-bg: #141a22;
+      --node: #212936;
+      --edge: #5b6676;
+      --ok: #4ade80;
+      --ok-bg: #153222;
+      --bad: #f97066;
+      --bad-bg: #3a1a17;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+  }
+  header h1 { margin: 0; font-size: 18px; }
+  header span { color: var(--muted); }
+  main {
+    display: grid;
+    grid-template-columns: minmax(320px, 440px) minmax(0, 1fr);
+    gap: 16px;
+    padding: 16px 24px 32px;
+    align-items: start;
+  }
+  @media (max-width: 860px) {
+    main { grid-template-columns: minmax(0, 1fr); padding: 16px; }
+    header { padding: 16px; }
+  }
+  .col { display: grid; gap: 16px; min-width: 0; }
+  section {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    min-width: 0;
+  }
+  h2 {
+    margin: 0 0 12px;
+    font-size: 12px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  select, button, textarea { font: inherit; color: inherit; }
+  select, button {
+    border: 1px solid var(--border);
+    background: var(--panel);
+    border-radius: 6px;
+    padding: 6px 10px;
+  }
+  select { flex: 1; min-width: 0; }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--muted); }
+  button:focus-visible, select:focus-visible, textarea:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+  button.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-text);
+    font-weight: 600;
+    padding: 8px 18px;
+  }
+  button:disabled { opacity: 0.55; cursor: default; }
+  textarea {
+    width: 100%;
+    height: 380px;
+    margin-top: 12px;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--code-bg);
+    font: 12.5px/1.5 var(--mono);
+    resize: vertical;
+    tab-size: 2;
+  }
+  .issues { margin: 10px 0 0; padding: 0; list-style: none; }
+  .issues li {
+    padding: 6px 10px;
+    margin-top: 6px;
+    border-radius: 6px;
+    background: var(--bad-bg);
+    color: var(--bad);
+    overflow-wrap: anywhere;
+  }
+  .hint { color: var(--muted); font-size: 12.5px; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip {
+    font: 12px var(--mono);
+    padding: 3px 8px;
+    border-radius: 999px;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+  }
+  #graph { overflow-x: auto; }
+  #graph svg { display: block; }
+  .node rect { fill: var(--node); stroke: var(--border); stroke-width: 1.5; }
+  .node .id { font-weight: 600; fill: var(--text); font-size: 13px; }
+  .node .task { fill: var(--muted); font: 11.5px var(--mono); }
+  .node.done rect { stroke: var(--ok); fill: var(--ok-bg); }
+  .node.failed rect { stroke: var(--bad); fill: var(--bad-bg); }
+  .node.invalid rect { stroke: var(--bad); stroke-dasharray: 5 4; }
+  .edge { fill: none; stroke: var(--edge); stroke-width: 1.5; }
+  .arrow { fill: var(--edge); }
+  .banner {
+    padding: 10px 12px;
+    border-radius: 6px;
+    margin-bottom: 12px;
+    overflow-wrap: anywhere;
+  }
+  .banner.ok { background: var(--ok-bg); color: var(--ok); }
+  .banner.bad { background: var(--bad-bg); color: var(--bad); }
+  .banner ul { margin: 6px 0 0; padding-left: 18px; }
+  .step {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-top: 8px;
+  }
+  .step summary {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    padding: 9px 12px;
+    cursor: pointer;
+    flex-wrap: wrap;
+  }
+  .step summary b { font-weight: 600; }
+  .step summary code { color: var(--muted); font: 12px var(--mono); }
+  .step summary .out { margin-left: auto; color: var(--muted); }
+  .step .body { padding: 0 12px 12px; }
+  .scroll { overflow: auto; max-height: 420px; border: 1px solid var(--border); border-radius: 6px; }
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  th, td { text-align: left; padding: 5px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { position: sticky; top: 0; background: var(--panel); color: var(--muted); font-weight: 600; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  pre {
+    margin: 0;
+    padding: 10px;
+    background: var(--code-bg);
+    font: 12px/1.5 var(--mono);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .body > button { margin-top: 8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>OrchaLite</h1>
+  <span>Define a workflow, see its step graph, run it.</span>
+</header>
+
+<main>
+  <div class="col">
+    <section>
+      <h2>Workflow</h2>
+      <div class="row">
+        <select id="example" aria-label="Load an example workflow"></select>
+        <button id="format" type="button">Format</button>
+      </div>
+      <textarea id="editor" spellcheck="false" aria-label="Workflow JSON"></textarea>
+      <ul class="issues" id="issues"></ul>
+      <div class="row" style="margin-top: 12px">
+        <button id="run" class="primary" type="button">Run workflow</button>
+        <span class="hint" id="runHint">Ctrl/Cmd + Enter</span>
+      </div>
+    </section>
+
+    <section>
+      <h2>Available tasks</h2>
+      <div class="chips" id="tasks"><span class="hint">Loading…</span></div>
+    </section>
+  </div>
+
+  <div class="col">
+    <section>
+      <h2>Step graph</h2>
+      <div id="graph"></div>
+    </section>
+
+    <section>
+      <h2>Results</h2>
+      <div id="results"><span class="hint">Run the workflow to see each step's output here.</span></div>
+    </section>
+  </div>
+</main>
+
+<script>
+const EXAMPLES = [
+  {
+    label: 'GitHub: repos with 1,000+ stars',
+    workflow: {
+      name: 'github-repo-analysis',
+      steps: [
+        { id: 'fetch', task: 'fetchRepos', params: { org: 'github', perPage: 100 }, dependsOn: [] },
+        { id: 'filter', task: 'filterRepos', params: { minStars: 1000 }, dependsOn: ['fetch'] },
+        { id: 'store', task: 'storeRepos', dependsOn: ['filter'] },
+      ],
+    },
+  },
+  {
+    label: 'Microsoft: 5,000+ stars into its own collection',
+    workflow: {
+      name: 'microsoft-repo-analysis',
+      steps: [
+        { id: 'fetch', task: 'fetchRepos', params: { org: 'microsoft', perPage: 50 }, dependsOn: [] },
+        { id: 'filter', task: 'filterRepos', params: { minStars: 5000 }, dependsOn: ['fetch'] },
+        { id: 'store', task: 'storeRepos', params: { collectionName: 'microsoft-repos' }, dependsOn: ['filter'] },
+      ],
+    },
+  },
+  {
+    label: 'Two branches from one fetch (nothing stored)',
+    workflow: {
+      name: 'branching-example',
+      steps: [
+        { id: 'fetch', task: 'fetchRepos', params: { org: 'facebook', perPage: 100 }, dependsOn: [] },
+        { id: 'popular', task: 'filterRepos', params: { minStars: 10000 }, dependsOn: ['fetch'] },
+        { id: 'huge', task: 'filterRepos', params: { minStars: 50000 }, dependsOn: ['fetch'] },
+      ],
+    },
+  },
+  {
+    label: 'Invalid: circular dependency',
+    workflow: {
+      name: 'cycle-example',
+      steps: [
+        { id: 'a', task: 'filterRepos', dependsOn: ['b'] },
+        { id: 'b', task: 'filterRepos', dependsOn: ['a'] },
+      ],
+    },
+  },
+];
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const $ = id => document.getElementById(id);
+const editor = $('editor');
+
+let knownTasks = null; // null until loaded
+let stepStatus = {};   // step id -> 'done' | 'failed'
+
+function el(tag, props = {}, children = []) {
+  const node = document.createElement(tag);
+  Object.assign(node, props);
+  for (const child of [].concat(children)) node.append(child);
+  return node;
+}
+
+function svgEl(tag, attrs = {}) {
+  const node = document.createElementNS(SVG_NS, tag);
+  for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, value);
+  return node;
+}
+
+const clip = (text, max) => (text.length > max ? text.slice(0, max - 1) + '…' : text);
+
+// --- Reading and checking the workflow ---------------------------------
+
+function readWorkflow() {
+  let workflow;
+  try {
+    workflow = JSON.parse(editor.value);
+  } catch (error) {
+    return { steps: [], issues: [`Not valid JSON: ${error.message}`], blocking: true };
+  }
+  if (!workflow || !Array.isArray(workflow.steps)) {
+    return { workflow, steps: [], issues: ['The workflow needs a "steps" array.'], blocking: true };
+  }
+
+  const steps = workflow.steps
+    .filter(step => step && typeof step.id === 'string')
+    .map(step => ({
+      id: step.id,
+      task: typeof step.task === 'string' ? step.task : '',
+      dependsOn: Array.isArray(step.dependsOn) ? step.dependsOn.filter(dep => typeof dep === 'string') : [],
+    }));
+
+  const issues = [];
+  const invalid = new Set();
+  const ids = new Set();
+  for (const step of steps) {
+    if (ids.has(step.id)) {
+      issues.push(`Duplicate step id "${step.id}"`);
+      invalid.add(step.id);
+    }
+    ids.add(step.id);
+  }
+  for (const step of steps) {
+    for (const dep of step.dependsOn) {
+      if (!ids.has(dep)) {
+        issues.push(`Step "${step.id}" depends on unknown step "${dep}"`);
+        invalid.add(step.id);
+      }
+    }
+    if (knownTasks && !knownTasks.includes(step.task)) {
+      issues.push(`Step "${step.id}" uses unknown task "${step.task}"`);
+      invalid.add(step.id);
+    }
+  }
+
+  // Level = longest dependency chain leading to the step; leftovers are in a cycle
+  const level = {};
+  let progressed = true;
+  while (progressed) {
+    progressed = false;
+    for (const step of steps) {
+      if (step.id in level) continue;
+      const deps = step.dependsOn.filter(dep => ids.has(dep));
+      if (deps.every(dep => dep in level)) {
+        level[step.id] = deps.length ? Math.max(...deps.map(dep => level[dep])) + 1 : 0;
+        progressed = true;
+      }
+    }
+  }
+  const stuck = steps.filter(step => !(step.id in level));
+  if (stuck.length) {
+    issues.push(`Circular dependency involving steps: ${[...new Set(stuck.map(s => s.id))].join(', ')}`);
+    const last = Math.max(-1, ...Object.values(level)) + 1;
+    for (const step of stuck) {
+      level[step.id] = last;
+      invalid.add(step.id);
+    }
+  }
+
+  return { workflow, steps, issues, invalid, level, blocking: false };
+}
+
+// --- Graph ---------------------------------------------------------------
+
+function renderGraph({ steps, level, invalid }) {
+  const host = $('graph');
+  host.replaceChildren();
+  if (!steps.length) {
+    host.append(el('span', { className: 'hint', textContent: 'No steps to draw.' }));
+    return;
+  }
+
+  const W = 150, H = 50, GAP_X = 64, GAP_Y = 18, PAD = 8;
+  // Edges that do not go left-to-right (cycles) loop around the sides, so leave room for them
+  const hasBackEdge = steps.some(step => step.dependsOn.some(dep => dep in level && level[dep] >= level[step.id]));
+  const PAD_X = hasBackEdge ? 40 : PAD;
+  const columns = [];
+  const seen = new Set();
+  for (const step of steps) {
+    if (seen.has(step.id)) continue; // draw duplicates once
+    seen.add(step.id);
+    (columns[level[step.id]] = columns[level[step.id]] || []).push(step);
+  }
+  const tallest = Math.max(...columns.map(col => (col ? col.length : 0)));
+  const width = PAD_X * 2 + columns.length * W + (columns.length - 1) * GAP_X;
+  const height = PAD * 2 + tallest * H + (tallest - 1) * GAP_Y;
+
+  const pos = {};
+  columns.forEach((col, c) => {
+    if (!col) return;
+    const offset = ((tallest - col.length) * (H + GAP_Y)) / 2;
+    col.forEach((step, r) => {
+      pos[step.id] = { x: PAD_X + c * (W + GAP_X), y: PAD + offset + r * (H + GAP_Y) };
+    });
+  });
+
+  const svg = svgEl('svg', { width, height, viewBox: `0 0 ${width} ${height}`, role: 'img', 'aria-label': 'Workflow step graph' });
+  const defs = svgEl('defs');
+  const marker = svgEl('marker', { id: 'arrow', viewBox: '0 0 8 8', refX: 7, refY: 4, markerWidth: 7, markerHeight: 7, orient: 'auto' });
+  marker.append(svgEl('path', { d: 'M0,0 L8,4 L0,8 z', class: 'arrow' }));
+  defs.append(marker);
+  svg.append(defs);
+
+  for (const step of steps) {
+    const to = pos[step.id];
+    for (const dep of step.dependsOn) {
+      const from = pos[dep];
+      if (!from || !to) continue;
+      let d;
+      if (to.x > from.x) {
+        const x1 = from.x + W, y1 = from.y + H / 2, x2 = to.x, y2 = to.y + H / 2;
+        d = `M${x1},${y1} C${x1 + GAP_X / 2},${y1} ${x2 - GAP_X / 2},${y2} ${x2},${y2}`;
+      } else {
+        // Downward loops hug the right side, upward ones the left, so a two-step cycle stays readable
+        const right = from.y <= to.y;
+        const self = from === to;
+        const x1 = from.x + (right ? W : 0), x2 = to.x + (right ? W : 0);
+        const y1 = from.y + H / 2 - (self ? 12 : 0), y2 = to.y + H / 2 + (self ? 12 : 0);
+        const bulge = right ? 32 : -32;
+        d = `M${x1},${y1} C${x1 + bulge},${y1} ${x2 + bulge},${y2} ${x2},${y2}`;
+      }
+      svg.append(svgEl('path', { d, class: 'edge', 'marker-end': 'url(#arrow)' }));
+    }
+  }
+
+  for (const id of Object.keys(pos)) {
+    const step = steps.find(s => s.id === id);
+    const state = stepStatus[id] || (invalid.has(id) ? 'invalid' : '');
+    const group = svgEl('g', { class: `node ${state}`, transform: `translate(${pos[id].x},${pos[id].y})` });
+    group.append(svgEl('rect', { width: W, height: H, rx: 8 }));
+    const title = svgEl('title');
+    title.textContent = `${step.id} (${step.task || 'no task'})`;
+    const idText = svgEl('text', { x: 12, y: 21, class: 'id' });
+    idText.textContent = clip(step.id, 18);
+    const taskText = svgEl('text', { x: 12, y: 38, class: 'task' });
+    taskText.textContent = clip(step.task || '(no task)', 19);
+    group.append(title, idText, taskText);
+    svg.append(group);
+  }
+
+  host.append(svg);
+}
+
+// --- Results -------------------------------------------------------------
+
+const PREFERRED_COLUMNS = ['full_name', 'name', 'stargazers_count', 'language'];
+
+function describe(value) {
+  if (value === undefined) return 'no output';
+  if (Array.isArray(value)) return `${value.length} item${value.length === 1 ? '' : 's'}`;
+  if (value && typeof value === 'object') return `object, ${Object.keys(value).length} keys`;
+  return String(value);
+}
+
+function renderValue(value) {
+  const body = el('div', { className: 'body' });
+  if (value === undefined) {
+    body.append(el('span', { className: 'hint', textContent: 'This step finished without returning a value.' }));
+    return body;
+  }
+
+  const isRows = Array.isArray(value) && value.length && value.every(v => v && typeof v === 'object' && !Array.isArray(v));
+  const columns = isRows ? PREFERRED_COLUMNS.filter(key => key in value[0] && !(key === 'name' && 'full_name' in value[0])) : [];
+
+  const json = el('div', { className: 'scroll' }, el('pre'));
+  const showJson = () => { json.firstChild.textContent = JSON.stringify(value, null, 2); };
+
+  if (!columns.length) {
+    showJson();
+    body.append(json);
+    return body;
+  }
+
+  const numeric = key => typeof value[0][key] === 'number';
+  const table = el('table');
+  table.append(el('tr', {}, columns.map(key => el('th', { textContent: key, className: numeric(key) ? 'num' : '' }))));
+  for (const row of value) {
+    table.append(el('tr', {}, columns.map(key => el('td', {
+      textContent: typeof row[key] === 'number' ? row[key].toLocaleString() : String(row[key] ?? ''),
+      className: numeric(key) ? 'num' : '',
+    }))));
+  }
+  const tableWrap = el('div', { className: 'scroll' }, table);
+
+  json.hidden = true;
+  const toggle = el('button', { type: 'button', textContent: 'Show raw JSON' });
+  toggle.addEventListener('click', () => {
+    if (json.hidden) showJson(); // built on demand; these payloads are large
+    json.hidden = !json.hidden;
+    tableWrap.hidden = !json.hidden;
+    toggle.textContent = json.hidden ? 'Show raw JSON' : 'Show table';
+  });
+  body.append(tableWrap, json, toggle);
+  return body;
+}
+
+function renderSuccess(steps, results, ms) {
+  const host = $('results');
+  host.replaceChildren(el('div', {
+    className: 'banner ok',
+    textContent: `Completed ${steps.length} step${steps.length === 1 ? '' : 's'} in ${(ms / 1000).toFixed(1)}s.`,
+  }));
+  for (const step of steps) {
+    const value = results[step.id];
+    const summary = el('summary', {}, [
+      el('b', { textContent: step.id }),
+      el('code', { textContent: step.task }),
+      el('span', { className: 'out', textContent: describe(value) }),
+    ]);
+    host.append(el('details', { className: 'step' }, [summary, renderValue(value)]));
+  }
+}
+
+function renderFailure(status, body, ms) {
+  const messages = [].concat(body.message ?? `Request failed with HTTP ${status}`);
+  const details = [];
+  for (const item of body.errors ?? []) {
+    details.push(typeof item === 'string' ? item : `${item.property}: ${Object.values(item.constraints ?? {}).join(', ')}`);
+  }
+  if (body.missingTasks) details.push(`Unknown tasks: ${body.missingTasks.join(', ')}`);
+  if (messages.length > 1) details.unshift(...messages.splice(1));
+
+  const kind = status >= 500 ? 'A step failed' : 'The workflow was rejected';
+  const where = body.stepId ? ` at step "${body.stepId}" (${body.task})` : '';
+  const banner = el('div', { className: 'banner bad' }, [
+    el('b', { textContent: `${kind}${where} after ${(ms / 1000).toFixed(1)}s. ` }),
+    document.createTextNode(messages[0]),
+  ]);
+  if (details.length) banner.append(el('ul', {}, details.map(text => el('li', { textContent: text }))));
+  $('results').replaceChildren(banner);
+}
+
+// --- Wiring --------------------------------------------------------------
+
+function refresh() {
+  const parsed = readWorkflow();
+  $('issues').replaceChildren(...parsed.issues.map(text => el('li', { textContent: text })));
+  if (!parsed.blocking) renderGraph(parsed);
+  return parsed;
+}
+
+async function run() {
+  const parsed = readWorkflow();
+  if (parsed.blocking) return;
+
+  const button = $('run');
+  button.disabled = true;
+  button.textContent = 'Running…';
+  stepStatus = {};
+  refresh();
+  $('results').replaceChildren(el('span', { className: 'hint', textContent: 'Running… results appear when every step has finished.' }));
+
+  const started = performance.now();
+  try {
+    const response = await fetch('/workflow/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(parsed.workflow),
+    });
+    const text = await response.text();
+    const body = text ? JSON.parse(text) : {};
+    const ms = performance.now() - started;
+
+    if (response.ok) {
+      for (const step of parsed.steps) stepStatus[step.id] = 'done';
+      renderSuccess(parsed.steps, body, ms);
+    } else {
+      if (body.stepId) stepStatus[body.stepId] = 'failed';
+      renderFailure(response.status, body, ms);
+    }
+  } catch (error) {
+    renderFailure(0, { message: `Could not reach the server: ${error.message}` }, performance.now() - started);
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Run workflow';
+    refresh();
+  }
+}
+
+function loadExample(index) {
+  editor.value = JSON.stringify(EXAMPLES[index].workflow, null, 2);
+  stepStatus = {};
+  refresh();
+}
+
+EXAMPLES.forEach((example, index) => $('example').append(el('option', { value: index, textContent: example.label })));
+$('example').addEventListener('change', event => loadExample(Number(event.target.value)));
+$('format').addEventListener('click', () => {
+  try {
+    editor.value = JSON.stringify(JSON.parse(editor.value), null, 2);
+  } catch (error) { /* the issue list already says the JSON is invalid */ }
+});
+editor.addEventListener('input', () => { stepStatus = {}; refresh(); });
+editor.addEventListener('keydown', event => {
+  if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) run();
+});
+$('run').addEventListener('click', run);
+
+loadExample(0);
+
+fetch('/workflow/tasks')
+  .then(response => response.json())
+  .then(tasks => {
+    knownTasks = tasks;
+    $('tasks').replaceChildren(...tasks.map(name => el('span', { className: 'chip', textContent: name })));
+    refresh();
+  })
+  .catch(() => {
+    $('tasks').replaceChildren(el('span', { className: 'hint', textContent: 'Could not load the task list.' }));
+  });
+</script>
+</body>
+</html>

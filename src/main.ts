@@ -1,20 +1,16 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
-import { ValidationPipe } from '@nestjs/common';
+import { NestExpressApplication } from '@nestjs/platform-express';
+import { configureApp } from './app.setup';
 import * as dotenv from 'dotenv';
 
 // Load environment variables
 dotenv.config();
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
-  
-  // Enable validation
-  app.useGlobalPipes(new ValidationPipe({
-    transform: true,
-    whitelist: true,
-    forbidNonWhitelisted: true,
-  }));
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+
+  configureApp(app);
 
   // Lets AppModule close the MongoDB connection on SIGINT/SIGTERM
   app.enableShutdownHooks();

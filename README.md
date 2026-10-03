@@ -133,7 +133,20 @@ Stores repository data in MongoDB.
 **Parameters:**
 - `collectionName` (optional): MongoDB collection name; letters, digits, `_` and `-` only (default: "repos")
 
+## Web UI
+
+With the app running, open http://localhost:3000 for a single-page UI (`public/index.html`, no build step):
+
+- Edit a workflow as JSON, or load one of the built-in examples
+- See the steps drawn as a dependency graph, with problems (unknown steps or tasks, cycles) flagged as you type
+- Run it and inspect each step's output, or the error and the step that failed
+
+Results appear when the whole run has finished; there is no run history or live progress yet.
+
 ## API Endpoints
+
+### GET /workflow/tasks
+Returns the names of the registered tasks.
 
 ### POST /workflow/run
 Executes a workflow.

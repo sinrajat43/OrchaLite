@@ -8,6 +8,10 @@ import { plainToClass } from 'class-transformer';
 
 @Injectable()
 export class WorkflowService {
+  listTasks(): string[] {
+    return Object.keys(taskRegistry);
+  }
+
   async run(createWorkflowDto: CreateWorkflowDto): Promise<WorkflowResults> {
     try {
       // Validate DTO
