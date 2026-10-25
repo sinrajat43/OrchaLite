@@ -5,7 +5,7 @@ when starting a stage, tick items off as they land, and record decisions in the
 log at the bottom. Diagrams of the current and target architecture are in
 [architecture.md](architecture.md).
 
-Last updated: 2026-10-25
+Last updated: 2026-10-25 (end of phase A)
 
 The doc works at two levels:
 
@@ -100,40 +100,32 @@ part by hand and understanding why those tools are designed the way they are.
 
 ## Where the project is today
 
-As of 2026-10-04, re-checked against the code on 2026-10-25 (no stage started
-yet; 34 Jest tests passing):
+As of 2026-10-25, phase A (generality) is done; 113 Jest tests pass.
 
-- One endpoint, `POST /workflow/run`, takes a definition and runs it inside the
-  HTTP request.
-- `runWorkflow` validates the graph (duplicate ids, unknown dependencies,
-  cycles) and runs steps one at a time in dependency order.
-- Three tasks, all GitHub-specific: `fetchRepos`, `filterRepos`, `storeRepos`.
-  They are plain objects in a static registry, outside Nest's dependency
-  injection.
-- A step receives its dependencies' outputs positionally: one dependency gives
-  the value, several give an array. `params` are static.
-- Run state lives in memory. Nothing is persisted about a run, so a crash or
-  client timeout loses it.
-- `GET /workflow/tasks` lists the registered task names.
-- A single-page UI (`public/index.html`) offers a JSON editor with examples, a
-  live step graph with validation, and per-step results and errors.
-- Jest specs cover the task runner, the three tasks and the HTTP API.
-- The `Task` interface is the old `execute(input, params)` shape: no
-  `TaskContext`, decorator, discovery, schemas or versions yet (all A1).
-- There is no run-level input; `fetchRepos` reads `GITHUB_TOKEN` from the
-  environment (replaced by A2 input and A4 connections).
-- Unknown task names are rejected at submit time, before any step runs.
+- Workflows are JSON definitions with declared `input`, `{{ }}` JSONata
+  expressions over input and upstream outputs, and `when` and `forEach` on
+  steps. A definition is fully checked before anything runs: graph, tasks,
+  expressions and what they reference, input schema, params schemas.
+- Tasks are `@TaskHandler` classes found through Nest's `DiscoveryService`,
+  each with TypeBox (JSON Schema) params and output, listed at `GET /tasks`.
+  The built-ins are generic: `http.request`, `transform`, `filter`,
+  `mongo.insert`, `mongo.findOne`, `mongo.upsert`, `notify.webhook`, `delay`.
+- Definitions can be stored as immutable versions (`/workflows`) and run by
+  name. Credentials live in encrypted connections (`/connections`).
+- The web UI edits, graphs, runs and stores workflows, manages connections,
+  and shows a local webhook inbox. Its examples include the uptime alert and
+  release watcher use cases, which an end-to-end test runs.
+
+Still true, and the subject of phase B:
+
+- A run happens inside the HTTP request, one step (and one `forEach` item) at
+  a time. Run state lives in memory, so a crash or client timeout loses it.
 - The first failing step aborts the run with a 500, and the outputs of steps
   that already succeeded are dropped.
-- `runWorkflow` holds commented-out TODOs for timeouts, retries and run status
-  tracking, and an `errors` array that is never read. Delete them when B1 and
-  B3 land.
-- The definition DTO is validated with `class-validator`, twice: by the global
-  `ValidationPipe` and again in `WorkflowService`. This bears on the A1 schema
-  library decision.
+- No retries or timeouts: `signal` is never aborted and `attempt` is always 1.
+- `delay` holds the request open and is capped at 60 seconds.
 
-In short: a script runner with a DAG. It orders steps correctly but is neither
-general nor durable.
+In short: a general, declarative workflow engine that is not yet durable.
 
 ## Target design
 
