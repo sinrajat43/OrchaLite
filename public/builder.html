@@ -22,6 +22,8 @@
     --ok-bg: #e7f6ec;
     --bad: #b42318;
     --bad-bg: #fdecea;
+    --scroll-thumb: #c9ced6;
+    --scroll-thumb-hover: #98a2b3;
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
   @media (prefers-color-scheme: dark) {
@@ -42,9 +44,22 @@
       --ok-bg: #153222;
       --bad: #f97066;
       --bad-bg: #3a1a17;
+      --scroll-thumb: #343e4c;
+      --scroll-thumb-hover: #5b6676;
     }
   }
   * { box-sizing: border-box; }
+  /* Thin scrollbars in the page's colours (standard properties, plus WebKit for Safari) */
+  * { scrollbar-width: thin; scrollbar-color: var(--scroll-thumb) transparent; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: var(--scroll-thumb);
+    border: 3px solid transparent;
+    border-radius: 999px;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover { background-color: var(--scroll-thumb-hover); }
   html, body { height: 100%; }
   body {
     margin: 0;

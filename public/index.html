@@ -21,6 +21,8 @@
     --ok-bg: #e7f6ec;
     --bad: #b42318;
     --bad-bg: #fdecea;
+    --scroll-thumb: #c9ced6;
+    --scroll-thumb-hover: #98a2b3;
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
   @media (prefers-color-scheme: dark) {
@@ -39,9 +41,22 @@
       --ok-bg: #153222;
       --bad: #f97066;
       --bad-bg: #3a1a17;
+      --scroll-thumb: #343e4c;
+      --scroll-thumb-hover: #5b6676;
     }
   }
   * { box-sizing: border-box; }
+  /* Thin scrollbars in the page's colours (standard properties, plus WebKit for Safari) */
+  * { scrollbar-width: thin; scrollbar-color: var(--scroll-thumb) transparent; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: var(--scroll-thumb);
+    border: 3px solid transparent;
+    border-radius: 999px;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover { background-color: var(--scroll-thumb-hover); }
   body {
     margin: 0;
     background: var(--bg);
@@ -246,6 +261,37 @@
   .tl-bar.RUNNING { background: var(--accent); }
   .tl-dur { color: var(--muted); font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
   .err { color: var(--bad); overflow-wrap: anywhere; }
+  /* Section headings with controls, folding sections, and lists that scroll inside their section */
+  .section-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .section-head h2 { margin: 0; }
+  .count {
+    font: 600 11px/1.4 var(--mono);
+    letter-spacing: 0;
+    color: var(--muted);
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 0 7px;
+  }
+  .count:empty { display: none; }
+  h2 .count { margin-left: 6px; vertical-align: 1px; }
+  details.fold > summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    list-style: none;
+    cursor: pointer;
+    user-select: none;
+  }
+  details.fold > summary::-webkit-details-marker { display: none; }
+  details.fold > summary h2 { margin: 0; }
+  details.fold > summary .chev { margin-left: auto; width: 16px; height: 16px; color: var(--muted); transition: transform 0.15s; }
+  details.fold > summary:hover .chev { color: var(--text); }
+  details.fold[open] > summary { margin-bottom: 12px; }
+  details.fold[open] > summary .chev { transform: rotate(180deg); }
+  details.fold > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 6px; border-radius: 4px; }
+  .capped { max-height: 320px; overflow: auto; padding-right: 2px; }
+  .capped.tall { max-height: 440px; }
   /* App bar shared by both pages: brand, then page tabs */
   header.app-bar {
     display: flex;
@@ -314,13 +360,41 @@
     </section>
 
     <section>
-      <h2>Stored workflows</h2>
-      <div class="list" id="stored"><span class="hint">Loading…</span></div>
+      <h2>Stored workflows<span class="count" id="storedCount"></span></h2>
+      <div class="list capped" id="stored"><span class="hint">Loading…</span></div>
     </section>
 
     <section>
-      <div class="row" style="justify-content: space-between; margin-bottom: 12px">
-        <h2 style="margin: 0">Run history</h2>
+      <details class="fold" data-fold="connections">
+        <summary><h2>Connections<span class="count" id="connCount"></span></h2><svg class="chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></summary>
+        <p class="hint" style="margin-top: 0">Named credentials, encrypted at rest. A step refers to one with <code>"connection": "name"</code>; its secrets are only ever sent under its base URL.</p>
+        <div class="list capped" id="connections"><span class="hint">Loading…</span></div>
+        <form class="form" id="connectionForm">
+          <div class="row">
+            <input type="text" id="connName" placeholder="name, e.g. github" aria-label="Connection name" required>
+            <input type="text" id="connBase" placeholder="base URL, e.g. https://api.github.com" aria-label="Base URL" required>
+          </div>
+          <textarea id="connHeaders" class="small" spellcheck="false" aria-label="Secret headers as JSON">{ "Authorization": "Bearer …" }</textarea>
+          <div class="row"><button type="submit">Save connection</button><span class="hint" id="connHint"></span></div>
+        </form>
+      </details>
+    </section>
+  </div>
+
+  <div class="col">
+    <section>
+      <h2>Step graph</h2>
+      <div id="graph"></div>
+    </section>
+
+    <section>
+      <h2>Results</h2>
+      <div id="results"><span class="hint">Run the workflow to see each step's output here.</span></div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>Run history</h2>
         <div class="row">
           <select id="historyStatus" aria-label="Filter runs by status" style="flex: none">
             <option value="">All</option>
@@ -332,48 +406,26 @@
           <button id="historyRefresh" type="button">Refresh</button>
         </div>
       </div>
-      <div class="runs" id="history"><span class="hint">Loading…</span></div>
+      <div class="runs capped tall" id="history"><span class="hint">Loading…</span></div>
       <button id="historyMore" type="button" hidden style="margin-top: 8px; width: 100%">Load older runs</button>
     </section>
 
     <section>
-      <h2>Connections</h2>
-      <p class="hint">Named credentials, encrypted at rest. A step refers to one with <code>"connection": "name"</code>; its secrets are only ever sent under its base URL.</p>
-      <div class="list" id="connections"><span class="hint">Loading…</span></div>
-      <form class="form" id="connectionForm">
-        <div class="row">
-          <input type="text" id="connName" placeholder="name, e.g. github" aria-label="Connection name" required>
-          <input type="text" id="connBase" placeholder="base URL, e.g. https://api.github.com" aria-label="Base URL" required>
+      <details class="fold" data-fold="inbox" open>
+        <summary><h2>Webhook inbox<span class="count" id="inboxCount"></span></h2><svg class="chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></summary>
+        <div class="section-head">
+          <p class="hint" style="margin: 0">Point <code>notify.webhook</code> at <code id="inboxUrl">/inbox/&lt;channel&gt;</code> to see notifications arrive here.</p>
+          <div class="row"><button id="inboxRefresh" type="button">Refresh</button><button id="inboxClear" type="button">Clear</button></div>
         </div>
-        <textarea id="connHeaders" class="small" spellcheck="false" aria-label="Secret headers as JSON">{ "Authorization": "Bearer …" }</textarea>
-        <div class="row"><button type="submit">Save connection</button><span class="hint" id="connHint"></span></div>
-      </form>
+        <div class="list capped" id="inbox"></div>
+      </details>
     </section>
 
     <section>
-      <h2>Task catalogue</h2>
-      <div class="catalogue" id="tasks"><span class="hint">Loading…</span></div>
-    </section>
-  </div>
-
-  <div class="col">
-    <section>
-      <h2>Step graph</h2>
-      <div id="graph"></div>
-    </section>
-
-    <section>
-      <div class="row" style="justify-content: space-between">
-        <h2>Webhook inbox</h2>
-        <div class="row"><button id="inboxRefresh" type="button">Refresh</button><button id="inboxClear" type="button">Clear</button></div>
-      </div>
-      <p class="hint">Point <code>notify.webhook</code> at <code id="inboxUrl">/inbox/&lt;channel&gt;</code> to see notifications arrive here.</p>
-      <div class="list" id="inbox"></div>
-    </section>
-
-    <section>
-      <h2>Results</h2>
-      <div id="results"><span class="hint">Run the workflow to see each step's output here.</span></div>
+      <details class="fold" data-fold="tasks">
+        <summary><h2>Task catalogue<span class="count" id="taskCount"></span></h2><svg class="chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></summary>
+        <div class="catalogue" id="tasks"><span class="hint">Loading…</span></div>
+      </details>
     </section>
   </div>
 </main>
@@ -832,6 +884,9 @@ async function showRun(runId) {
   renderHistory();
   const host = $('results');
   host.replaceChildren(el('span', { className: 'hint', textContent: 'Loading run…' }));
+  // Results sit above the history list, so bring them into view if they scrolled away
+  const top = host.closest('section').getBoundingClientRect().top;
+  if (top < 0 || top > window.innerHeight - 120) host.closest('section').scrollIntoView({ behavior: 'smooth', block: 'start' });
   try {
     const [run, events] = await Promise.all([
       fetch(`/runs/${runId}`).then(r => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))),
@@ -907,6 +962,24 @@ async function api(method, path, body) {
 
 const messageOf = body => [].concat(body?.errors ?? body?.message ?? 'Request failed').join('; ');
 
+// The number shown next to a section's heading
+function setCount(id, n) {
+  const node = $(id);
+  if (node) node.textContent = String(n);
+}
+
+// Folding sections remember whether they were left open
+for (const fold of document.querySelectorAll('details.fold[data-fold]')) {
+  const key = `orchalite.classic.fold.${fold.dataset.fold}`;
+  try {
+    const saved = localStorage.getItem(key);
+    if (saved !== null) fold.open = saved === '1';
+  } catch { /* storage unavailable: keep the default */ }
+  fold.addEventListener('toggle', () => {
+    try { localStorage.setItem(key, fold.open ? '1' : '0'); } catch { /* optional */ }
+  });
+}
+
 async function saveWorkflow() {
   const parsed = readWorkflow();
   if (parsed.blocking || !parsed.workflow) return;
@@ -928,6 +1001,7 @@ async function loadStored() {
     host.replaceChildren(el('span', { className: 'hint', textContent: 'Could not load stored workflows (is MongoDB connected?).' }));
     return;
   }
+  setCount('storedCount', body.length);
   if (!body.length) {
     host.replaceChildren(el('span', { className: 'hint', textContent: 'None yet. Save the workflow in the editor to store version 1.' }));
     return;
@@ -965,6 +1039,7 @@ async function loadConnections() {
     host.replaceChildren(el('span', { className: 'hint', textContent: 'Could not load connections (is MongoDB connected?).' }));
     return;
   }
+  setCount('connCount', body.length);
   if (!body.length) {
     host.replaceChildren(el('span', { className: 'hint', textContent: 'No connections yet.' }));
     return;
@@ -1009,6 +1084,7 @@ async function loadInbox() {
   const host = $('inbox');
   const { ok, body } = await api('GET', '/inbox').catch(() => ({ ok: false }));
   if (!ok) return;
+  setCount('inboxCount', body.length);
   if (!body.length) {
     host.replaceChildren(el('span', { className: 'hint', textContent: 'Nothing received yet.' }));
     return;
@@ -1080,6 +1156,7 @@ fetch('/tasks')
   .then(response => response.json())
   .then(tasks => {
     knownTasks = tasks.map(task => task.name);
+    setCount('taskCount', tasks.length);
     $('tasks').replaceChildren(...tasks.map(task => el('details', {}, [
       el('summary', {}, [
         el('code', { textContent: `${task.name} v${task.version}` }),
