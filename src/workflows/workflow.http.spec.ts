@@ -3,6 +3,7 @@ import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { Type } from '@sinclair/typebox';
 import { configureApp } from '../app.setup';
+import { closeApp } from '../testing/http-server';
 import { Task, TaskContext } from '../tasks/task.interface';
 import { TaskHandler } from '../tasks/task-handler.decorator';
 import { WorkflowModule } from './workflow.module';
@@ -71,7 +72,7 @@ describe('HTTP API', () => {
   });
 
   afterAll(async () => {
-    await app.close();
+    await closeApp(app);
     jest.restoreAllMocks();
   });
 
@@ -83,13 +84,18 @@ describe('HTTP API', () => {
     expect(await response.text()).toContain('<title>OrchaLite</title>');
   });
 
-  it('lists the built-in tasks and tasks discovered in other modules', async () => {
-    const response = await fetch(`${baseUrl}/workflow/tasks`);
+  it('lists the task catalogue, including tasks discovered in other modules, with schemas', async () => {
+    const response = await fetch(`${baseUrl}/tasks`);
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual(
-      expect.arrayContaining(['fetchRepos', 'filterRepos', 'storeRepos', 'one', 'double', 'nothing', 'boom'])
-    );
+    const tasks = await response.json();
+    expect(tasks.map((t: { name: string }) => t.name)).toEqual([
+      'boom', 'delay', 'double', 'filter', 'http.request', 'mongo.insert', 'nothing', 'notify.webhook', 'one', 'transform',
+    ]);
+    const http = tasks.find((t: { name: string }) => t.name === 'http.request');
+    expect(http).toMatchObject({ version: 1, description: expect.any(String) });
+    expect(http.paramsSchema).toMatchObject({ type: 'object', required: ['url'], additionalProperties: false });
+    expect(http.outputSchema.properties).toHaveProperty('status');
   });
 
   it('runs a workflow with input and returns every step result', async () => {

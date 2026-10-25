@@ -131,6 +131,12 @@
   }
   .hint { color: var(--muted); font-size: 12.5px; }
   .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .catalogue details { border-top: 1px solid var(--border); padding: 6px 0; }
+  .catalogue details:first-child { border-top: 0; }
+  .catalogue summary { cursor: pointer; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+  .catalogue summary code { font: 12px var(--mono); font-weight: 600; }
+  .catalogue summary span { color: var(--muted); font-size: 12.5px; }
+  .catalogue pre { margin-top: 6px; max-height: 260px; overflow: auto; }
   .chip {
     font: 12px var(--mono);
     padding: 3px 8px;
@@ -215,8 +221,8 @@
     </section>
 
     <section>
-      <h2>Available tasks</h2>
-      <div class="chips" id="tasks"><span class="hint">Loading…</span></div>
+      <h2>Task catalogue</h2>
+      <div class="catalogue" id="tasks"><span class="hint">Loading…</span></div>
     </section>
   </div>
 
@@ -234,69 +240,7 @@
 </main>
 
 <script>
-const EXAMPLES = [
-  {
-    label: 'GitHub: repos with 1,000+ stars',
-    input: { org: 'github', minStars: 1000 },
-    workflow: {
-      name: 'github-repo-analysis',
-      input: { org: 'string', minStars: { type: 'integer', default: 1000 } },
-      steps: [
-        { id: 'fetch', task: 'fetchRepos', params: { org: '{{ input.org }}', perPage: 100 }, dependsOn: [] },
-        { id: 'filter', task: 'filterRepos', params: { repos: '{{ steps.fetch.output }}', minStars: '{{ input.minStars }}' }, dependsOn: ['fetch'] },
-        { id: 'store', task: 'storeRepos', params: { repos: '{{ steps.filter.output }}' }, dependsOn: ['filter'] },
-      ],
-    },
-  },
-  {
-    label: 'Microsoft: 5,000+ stars into its own collection',
-    input: { org: 'microsoft' },
-    workflow: {
-      name: 'microsoft-repo-analysis',
-      input: { org: 'string' },
-      steps: [
-        { id: 'fetch', task: 'fetchRepos', params: { org: '{{ input.org }}', perPage: 50 }, dependsOn: [] },
-        { id: 'filter', task: 'filterRepos', params: { repos: '{{ steps.fetch.output }}', minStars: 5000 }, dependsOn: ['fetch'] },
-        { id: 'store', task: 'storeRepos', params: { repos: '{{ steps.filter.output }}', collectionName: '{{ input.org }}-repos' }, dependsOn: ['filter'] },
-      ],
-    },
-  },
-  {
-    label: 'Two branches from one fetch (nothing stored)',
-    input: { org: 'facebook' },
-    workflow: {
-      name: 'branching-example',
-      input: { org: 'string' },
-      steps: [
-        { id: 'fetch', task: 'fetchRepos', params: { org: '{{ input.org }}', perPage: 100 }, dependsOn: [] },
-        { id: 'popular', task: 'filterRepos', params: { repos: '{{ steps.fetch.output }}', minStars: 10000 }, dependsOn: ['fetch'] },
-        { id: 'huge', task: 'filterRepos', params: { repos: '{{ steps.fetch.output }}', minStars: 50000 }, dependsOn: ['fetch'] },
-      ],
-    },
-  },
-  {
-    label: 'Invalid: reads a step it does not depend on',
-    input: {},
-    workflow: {
-      name: 'undeclared-dependency',
-      steps: [
-        { id: 'fetch', task: 'fetchRepos', dependsOn: [] },
-        { id: 'filter', task: 'filterRepos', params: { repos: '{{ steps.fetch.output }}' }, dependsOn: [] },
-      ],
-    },
-  },
-  {
-    label: 'Invalid: circular dependency',
-    input: {},
-    workflow: {
-      name: 'cycle-example',
-      steps: [
-        { id: 'a', task: 'filterRepos', dependsOn: ['b'] },
-        { id: 'b', task: 'filterRepos', dependsOn: ['a'] },
-      ],
-    },
-  },
-];
+let EXAMPLES = []; // loaded from /examples.json
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const $ = id => document.getElementById(id);
@@ -487,7 +431,7 @@ function renderGraph({ steps, level, invalid }) {
 
 // --- Results -------------------------------------------------------------
 
-const PREFERRED_COLUMNS = ['full_name', 'name', 'stargazers_count', 'language'];
+const PREFERRED_COLUMNS = ['full_name', 'name', 'stargazers_count', 'stars', 'language', 'url', 'ok', 'status'];
 
 function describe(value) {
   if (value === undefined) return 'no output';
@@ -627,7 +571,6 @@ function loadExample(index) {
   refresh();
 }
 
-EXAMPLES.forEach((example, index) => $('example').append(el('option', { value: index, textContent: example.label })));
 $('example').addEventListener('change', event => loadExample(Number(event.target.value)));
 $('format').addEventListener('click', () => {
   try {
@@ -641,13 +584,28 @@ editor.addEventListener('keydown', event => {
 });
 $('run').addEventListener('click', run);
 
-loadExample(0);
+fetch('/examples.json')
+  .then(response => response.json())
+  .then(examples => {
+    EXAMPLES = examples;
+    EXAMPLES.forEach((example, index) => $('example').append(el('option', { value: index, textContent: example.label })));
+    loadExample(0);
+  })
+  .catch(() => {
+    $('issues').replaceChildren(el('li', { textContent: 'Could not load the example workflows.' }));
+  });
 
-fetch('/workflow/tasks')
+fetch('/tasks')
   .then(response => response.json())
   .then(tasks => {
-    knownTasks = tasks;
-    $('tasks').replaceChildren(...tasks.map(name => el('span', { className: 'chip', textContent: name })));
+    knownTasks = tasks.map(task => task.name);
+    $('tasks').replaceChildren(...tasks.map(task => el('details', {}, [
+      el('summary', {}, [
+        el('code', { textContent: `${task.name} v${task.version}` }),
+        el('span', { textContent: task.description ?? '' }),
+      ]),
+      el('pre', { textContent: `params: ${JSON.stringify(task.paramsSchema, null, 2)}\n\noutput: ${JSON.stringify(task.outputSchema, null, 2)}` }),
+    ])));
     refresh();
   })
   .catch(() => {

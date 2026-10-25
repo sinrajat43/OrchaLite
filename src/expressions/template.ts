@@ -11,9 +11,12 @@ export type Template =
   | { kind: 'object'; entries: Array<[string, Template]> }
   | { kind: 'array'; items: Template[] };
 
-/** One compiled expression and where it sits, e.g. "params.query.q" */
+/** One compiled expression and where it sits */
 export interface LocatedExpression {
+  /** For messages, e.g. "params.query.q" */
   path: string;
+  /** JSON Pointer relative to the compiled value, e.g. "/query/q" */
+  pointer: string;
   source: string;
   expr: jsonata.Expression;
 }
@@ -41,7 +44,7 @@ const describeError = (error: any): string => error?.message ?? String(error);
  * uses braces, so a closing "}}" only ends an expression once the text before
  * it parses.
  */
-function splitString(text: string, path: string, issues: string[]) {
+function splitString(text: string, path: string, pointer: string, issues: string[]) {
   const parts: Array<string | LocatedExpression> = [];
   let index = 0;
 
@@ -57,7 +60,7 @@ function splitString(text: string, path: string, issues: string[]) {
       const source = text.slice(open + 2, close).trim();
       try {
         if (!source) throw new Error('empty expression');
-        found = { path, source, expr: jsonata(source) };
+        found = { path, pointer, source, expr: jsonata(source) };
       } catch (error) {
         lastError = error;
         close = text.indexOf('}}', close + 1);
@@ -85,9 +88,9 @@ export function compileTemplate(value: unknown, path: string): CompiledTemplate 
   const expressions: LocatedExpression[] = [];
   const issues: string[] = [];
 
-  const compile = (node: unknown, at: string): Template => {
+  const compile = (node: unknown, at: string, pointer: string): Template => {
     if (typeof node === 'string') {
-      const parts = splitString(node, at, issues);
+      const parts = splitString(node, at, pointer, issues);
       if (!parts || parts.every(part => typeof part === 'string')) return { kind: 'literal', value: node };
 
       const located = parts.filter((part): part is LocatedExpression => typeof part !== 'string');
@@ -102,18 +105,21 @@ export function compileTemplate(value: unknown, path: string): CompiledTemplate 
       };
     }
     if (Array.isArray(node)) {
-      return { kind: 'array', items: node.map((item, i) => compile(item, `${at}[${i}]`)) };
+      return { kind: 'array', items: node.map((item, i) => compile(item, `${at}[${i}]`, `${pointer}/${i}`)) };
     }
     if (node && typeof node === 'object') {
       return {
         kind: 'object',
-        entries: Object.entries(node).map(([key, child]) => [key, compile(child, `${at}.${key}`)]),
+        entries: Object.entries(node).map(([key, child]) => [
+          key,
+          compile(child, `${at}.${key}`, `${pointer}/${key.replace(/~/g, '~0').replace(/\//g, '~1')}`),
+        ]),
       };
     }
     return { kind: 'literal', value: node };
   };
 
-  return { template: compile(value, path), expressions, issues };
+  return { template: compile(value, path, ''), expressions, issues };
 }
 
 /**

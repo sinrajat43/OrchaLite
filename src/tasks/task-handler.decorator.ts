@@ -5,6 +5,8 @@ export interface TaskHandlerOptions {
   name: string;
   /** Bumped when params or output change incompatibly */
   version: number;
+  /** One line for the task catalogue */
+  description?: string;
 }
 
 /**

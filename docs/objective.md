@@ -199,7 +199,7 @@ decide what a persisted step record has to store.
   - Done when: the GitHub pipeline runs with explicit wiring, and a reference
     to a non-dependency is rejected at submit time.
 
-- [ ] **A3. Generic primitives and task catalogue**
+- [x] **A3. Generic primitives and task catalogue** (done 2026-10-25)
   - Build: `http.request`, `transform`, `filter`, `mongo.insert`,
     `notify.webhook`, `delay`; a schema per task; `GET /tasks` listing names,
     versions and schemas; params validated against the schema at submit time.
@@ -327,4 +327,10 @@ Several of these come back in later horizons, noted on each item.
 | 2026-10-25 | Expressions are JSONata inside `{{ }}`: a string that is one expression keeps the value's type, mixed text interpolates to a string | JSONata reshapes as well as queries. Whole-string expressions let a param carry an array or object, not just text |
 | 2026-10-25 | Static checks read the JSONata AST: a root path `steps.<id>` must name an upstream step (direct or indirect), `input.<name>` a declared input, and any other root name is rejected | Catches wiring mistakes and typos at submit time. Paths inside filters are relative to an item and are skipped; at run time a step's scope only holds upstream outputs anyway |
 | 2026-10-25 | Run input is declared as type names or JSON Schema and checked with Ajv, defaults filled in | Same schema language as task params, so A3 reuses the validator |
+| 2026-10-25 | Params are validated twice: at submit time against the schema, skipping any location holding an expression, and again once resolved, filling in defaults | Catches typos and wrong literals up front without guessing what an expression will produce |
+| 2026-10-25 | Tasks can add a `validate(params)` hook for checks a schema cannot express | `filter` uses it to compile its condition at submit time and to forbid `{{ }}` inside it |
+| 2026-10-25 | `filter`'s condition is JSONata per item with values passed through `vars`, never spliced in with `{{ }}` | Splicing data into code is injection; binding values as variables keeps data and code apart |
+| 2026-10-25 | `http.request` fails on a network error or non-2xx unless `throwOnError: false`, which reports it in the output | Failing is the safe default; the uptime alert needs "down" as data, not as a failed run |
+| 2026-10-25 | `delay` is in process and capped at 60 seconds | It holds the HTTP request open until runs leave the request in B1-B2, where it becomes durable |
+| 2026-10-25 | Example workflows live in `public/examples.json`; the UI loads them and an end-to-end test runs them against a fake GitHub and a throwaway MongoDB | The examples in the UI cannot drift from what the engine accepts |
 | 2026-10-25 | `POST /workflow/run` takes `{ definition, input }` and returns `{ runId, steps: { <id>: { status, output } } }` | Separates a definition from one run's input, ahead of stored definitions in A4; the response mirrors the `steps.<id>.output` expression scope |

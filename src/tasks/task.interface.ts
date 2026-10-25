@@ -34,6 +34,13 @@ export interface Task<TParams = any, TOutput = any> {
   readonly outputSchema: TSchema;
 
   /**
+   * Checks beyond the schema, run at submit time on the step's params as
+   * written, so values may still be {{ ... }} expressions
+   * @returns problems found, each starting with the param path
+   */
+  validate?(params: Record<string, unknown>): string[];
+
+  /**
    * Execute the task for one step
    * @returns Promise resolving to the step's output
    * @throws Error if the task fails; the engine wraps it in TaskExecutionError

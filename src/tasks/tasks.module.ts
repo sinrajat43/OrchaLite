@@ -1,13 +1,16 @@
 import { Module } from '@nestjs/common';
-import { FetchReposTask } from './fetchRepos.task';
-import { FilterReposTask } from './filterRepos.task';
-import { StoreReposTask } from './storeRepos.task';
+import { DelayTask } from './delay.task';
+import { FilterTask } from './filter.task';
+import { HttpRequestTask } from './http-request.task';
+import { MongoInsertTask } from './mongo-insert.task';
+import { NotifyWebhookTask } from './notify-webhook.task';
+import { TransformTask } from './transform.task';
 
 /**
  * The built-in task catalogue. A task is any provider marked with
  * @TaskHandler; listing it here is all the registration it needs.
  */
 @Module({
-  providers: [FetchReposTask, FilterReposTask, StoreReposTask],
+  providers: [HttpRequestTask, TransformTask, FilterTask, MongoInsertTask, NotifyWebhookTask, DelayTask],
 })
 export class TasksModule {}

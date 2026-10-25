@@ -2,7 +2,7 @@ import { Logger } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { resolveTemplate } from '../expressions/template';
 import { TaskExecutionError, TaskLogger } from '../tasks/task.interface';
-import { formatSchemaErrors } from './schema-validator';
+import { formatSchemaErrors, validatorFor } from './schema-validator';
 import { TaskLookup } from './task-registry.service';
 import { CompiledStep, validateWorkflow, WorkflowDefinition } from './workflow-definition';
 
@@ -87,6 +87,16 @@ export async function runWorkflow(
       }
 
       const task = tasks.get(step.task);
+
+      // Expressions can produce anything, so check the resolved params; this also fills in defaults
+      const validateParams = validatorFor(task.paramsSchema);
+      if (!validateParams(params)) {
+        throw new TaskExecutionError(
+          step.id,
+          step.task,
+          `Invalid params: ${formatSchemaErrors(validateParams.errors, 'params').join('; ')}`
+        );
+      }
 
       // TODO: Add retry logic
       // const result = await withRetry(() => task.execute(...), {

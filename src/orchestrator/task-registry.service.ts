@@ -60,4 +60,13 @@ export class TaskRegistry implements OnModuleInit, TaskLookup {
   names(): string[] {
     return [...this.tasks.keys()];
   }
+
+  /**
+   * Every registered version of every task, sorted by name then version
+   */
+  list(): RegisteredTask[] {
+    return [...this.tasks.values()]
+      .flatMap(versions => [...versions.values()])
+      .sort((a, b) => a.name.localeCompare(b.name) || a.version - b.version);
+  }
 }

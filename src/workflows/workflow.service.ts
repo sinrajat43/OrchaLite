@@ -9,10 +9,6 @@ import { TaskExecutionError } from '../tasks/task.interface';
 export class WorkflowService {
   constructor(private readonly tasks: TaskRegistry) {}
 
-  listTasks(): string[] {
-    return this.tasks.names();
-  }
-
   async run({ definition, input }: RunWorkflowDto): Promise<WorkflowResults> {
     try {
       console.log(`Starting workflow: ${definition.name}`);

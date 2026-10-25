@@ -1,6 +1,7 @@
 import { ValidateFunction } from 'ajv';
 import { compileTemplate, findReferences, Template } from '../expressions/template';
-import { ajv } from './schema-validator';
+import { ajv, formatSchemaErrors, validatorFor } from './schema-validator';
+import { Task } from '../tasks/task.interface';
 import { TaskLookup } from './task-registry.service';
 
 /** A JSON Schema type name, or a full JSON Schema for the value */
@@ -126,6 +127,24 @@ function upstreamOf(id: string, byId: Map<string, WorkflowStep>): Set<string> {
 }
 
 /**
+ * Validates params as written against the task's schema. A value holding an
+ * expression is only known at run time, so errors at or below it are dropped;
+ * the resolved params are validated again before the task runs.
+ */
+function checkParams(task: Task, raw: Record<string, unknown>, expressionPointers: string[]): string[] {
+  const validate = validatorFor(task.paramsSchema);
+  const unknownAt = (pointer: string) => expressionPointers.some(p => pointer === p || pointer.startsWith(`${p}/`));
+
+  // Validation fills in defaults, so check a copy
+  validate(structuredClone(raw));
+  const schemaIssues = formatSchemaErrors(
+    (validate.errors ?? []).filter(error => !unknownAt(error.instancePath)),
+    'params'
+  );
+  return [...schemaIssues, ...(task.validate?.(raw) ?? [])];
+}
+
+/**
  * Checks a definition and compiles its expressions. Every problem is reported
  * at once, so a bad definition is rejected before any step runs.
  * @throws WorkflowDefinitionError listing every issue found
@@ -141,13 +160,18 @@ export function validateWorkflow(definition: WorkflowDefinition, tasks: TaskLook
 
   const compiled = steps.map(step => {
     const where = `Step "${step.id}"`;
-    if (!tasks.get(step.task)) {
+    const task = tasks.get(step.task);
+    if (!task) {
       issues.push(`${where} uses unknown task "${step.task}"`);
     }
 
     const upstream = upstreamOf(step.id, byId);
     const params = compileTemplate(step.params ?? {}, 'params');
     issues.push(...params.issues.map(issue => `${where} ${issue}`));
+
+    if (task && params.issues.length === 0) {
+      issues.push(...checkParams(task, step.params ?? {}, params.expressions.map(e => e.pointer)).map(issue => `${where} ${issue}`));
+    }
 
     for (const { expr, path } of params.expressions) {
       const refs = findReferences(expr, path);

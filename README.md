@@ -17,7 +17,6 @@ Where the project is heading: [objective and roadmap](docs/objective.md) · [arc
 
 - Node.js (v14 or higher)
 - MongoDB (local or Atlas)
-- GitHub Personal Access Token (for GitHub API tasks)
 
 ## Installation
 
@@ -39,9 +38,6 @@ cp .env.example .env
 Create a `.env` file in the root directory with the following variables:
 
 ```env
-# GitHub API Configuration
-GITHUB_TOKEN=your_github_personal_access_token
-
 # MongoDB Configuration
 MONGODB_URI=mongodb://localhost:27017/orchalite
 # For MongoDB Atlas, use:
@@ -100,31 +96,46 @@ declared input.
 
 ### Example Workflow
 
+The GitHub pipeline, built from generic tasks only. This and the other examples
+in the web UI live in [`public/examples.json`](public/examples.json) and are
+run end to end by the test suite.
+
 ```json
 {
-  "name": "github-repo-analysis",
+  "name": "popular-repos",
   "input": {
-    "org": "string",
-    "minStars": { "type": "integer", "default": 1000 }
+    "org": { "type": "string", "pattern": "^[A-Za-z0-9-]+$" },
+    "minStars": { "type": "integer", "minimum": 0, "default": 1000 }
   },
   "steps": [
     {
       "id": "fetch",
-      "task": "fetchRepos",
-      "params": { "org": "{{ input.org }}", "perPage": 100 },
+      "task": "http.request",
+      "params": {
+        "url": "https://api.github.com/search/repositories",
+        "query": { "q": "org:{{ input.org }}", "sort": "stars", "order": "desc", "per_page": 100 }
+      },
       "dependsOn": []
     },
     {
-      "id": "filter",
-      "task": "filterRepos",
-      "params": { "repos": "{{ steps.fetch.output }}", "minStars": "{{ input.minStars }}" },
+      "id": "popular",
+      "task": "filter",
+      "params": {
+        "items": "{{ steps.fetch.output.body.items }}",
+        "where": "stargazers_count >= $minStars",
+        "vars": { "minStars": "{{ input.minStars }}" }
+      },
       "dependsOn": ["fetch"]
     },
     {
-      "id": "store",
-      "task": "storeRepos",
-      "params": { "repos": "{{ steps.filter.output }}", "collectionName": "popular-repos" },
-      "dependsOn": ["filter"]
+      "id": "save",
+      "task": "mongo.insert",
+      "params": {
+        "collection": "repos",
+        "documents": { "org": "{{ input.org }}", "repos": "{{ steps.popular.output }}" },
+        "timestampField": "timestamp"
+      },
+      "dependsOn": ["popular"]
     }
   ]
 }
@@ -132,42 +143,44 @@ declared input.
 
 ## Available Tasks
 
-### 1. fetchRepos
-Fetches repositories from GitHub API.
+`GET /tasks` lists every task with JSON Schemas for its params and output. A
+step's params are checked against the schema when the workflow is submitted
+(values that are expressions are checked once resolved, just before the step
+runs), so a typo in a param name or a wrong type is rejected up front.
 
-**Parameters:**
-- `org` (optional): GitHub organization name (default: "github")
-- `perPage` (optional): Number of repos per page (default: 100)
-- `page` (optional): Page number (default: 1)
+| Task | Does | Key params | Output |
+| --- | --- | --- | --- |
+| `http.request` | Calls an HTTP endpoint | `url`, `method`, `query`, `headers`, `body`, `timeoutMs`, `throwOnError` | `{ ok, status, headers, body, durationMs, error? }` |
+| `transform` | Returns `value` once its expressions are resolved, to reshape data | `value` | the value |
+| `filter` | Keeps items for which a JSONata condition holds | `items`, `where` (per item, reads `vars` as `$name`), `vars` | the kept items |
+| `mongo.insert` | Inserts documents into a collection | `collection`, `documents`, `timestampField` | `{ insertedCount }` |
+| `notify.webhook` | POSTs JSON, failing unless the answer is 2xx | `url`, `payload`, `headers` | `{ status }` |
+| `delay` | Waits, in process, up to 60s | `ms` | `{ waitedMs }` |
 
-### 2. filterRepos
-Filters repositories based on star count.
+`http.request` fails the step on a network error or a non-2xx status. With
+`throwOnError: false` it reports them in the output instead, which suits a
+health check.
 
-**Parameters:**
-- `repos`: The repositories to filter
-- `minStars` (optional): Minimum number of stars (default: 1000)
-
-### 3. storeRepos
-Stores repository data in MongoDB.
-
-**Parameters:**
-- `repos`: The repositories to store
-- `collectionName` (optional): MongoDB collection name; letters, digits, `_` and `-` only (default: "repos")
+`filter`'s `where` is code, so it may not contain `{{ ... }}`: splicing data
+into it would let the data change the condition. Pass values in through `vars`.
 
 ## Web UI
 
 With the app running, open http://localhost:3000 for a single-page UI (`public/index.html`, no build step):
 
 - Edit a workflow as JSON, or load one of the built-in examples
+- Give the run its input as JSON
 - See the steps drawn as a dependency graph, with problems (unknown steps or tasks, cycles) flagged as you type
+- Browse the task catalogue with each task's params and output schemas
 - Run it and inspect each step's output, or the error and the step that failed
 
 Results appear when the whole run has finished; there is no run history or live progress yet.
 
 ## API Endpoints
 
-### GET /workflow/tasks
-Returns the names of the registered tasks.
+### GET /tasks
+Returns the task catalogue: name, version, description, and the JSON Schemas of
+each task's params and output.
 
 ### POST /workflow/run
 Runs a workflow definition with the given input, inside the request.
@@ -200,26 +213,29 @@ or the input (`Invalid run input`). `500` names the step that failed.
 ```
 src/
 ├── main.ts                 # Application entry point
-├── app.module.ts           # Root module
-├── workflows/             # Workflow-related code
-│   ├── workflow.controller.ts
+├── app.module.ts           # Root module, MongoDB connection
+├── workflows/              # HTTP API
+│   ├── workflow.controller.ts    # POST /workflow/run
+│   ├── tasks.controller.ts       # GET /tasks
 │   ├── workflow.service.ts
-│   └── dto/
-│       └── create-workflow.dto.ts
-├── tasks/                 # Task contract and implementations
-│   ├── task.interface.ts         # Task and TaskContext
-│   ├── task-handler.decorator.ts # @TaskHandler({ name, version })
-│   ├── tasks.module.ts           # Built-in task catalogue
-│   ├── fetchRepos.task.ts
-│   ├── filterRepos.task.ts
-│   └── storeRepos.task.ts
-├── orchestrator/          # Workflow execution engine
-│   ├── orchestrator.module.ts
+│   └── dto/workflow.dto.ts
+├── orchestrator/           # Workflow engine
+│   ├── workflow-definition.ts    # Validates and compiles a definition
+│   ├── task-runner.util.ts       # Runs a compiled workflow
 │   ├── task-registry.service.ts  # Discovers @TaskHandler providers
-│   └── task-runner.util.ts
-└── schemas/              # MongoDB schemas
-    └── repo.schema.ts
+│   └── schema-validator.ts       # Ajv
+├── expressions/
+│   └── template.ts               # {{ }} templates, JSONata, reference checks
+├── tasks/                  # Task contract and the built-in tasks
+│   ├── task.interface.ts         # Task and TaskContext
+│   ├── task-handler.decorator.ts # @TaskHandler({ name, version, description })
+│   ├── tasks.module.ts           # Built-in task catalogue
+│   └── *.task.ts
+└── testing/                # Test helpers: task contexts, local HTTP server, throwaway MongoDB
 ```
+
+Tests that need MongoDB start a throwaway instance with `mongodb-memory-server`,
+using the `mongod` on the PATH when there is one.
 
 ## Adding New Tasks
 
@@ -251,9 +267,11 @@ export class GreetTask implements Task<GreetParams, string> {
 }
 ```
 
-The context also carries `input` (dependency outputs), an abort `signal`, the
-`attempt` number and an `idempotencyKey` stable per run and step. Schemas are
-declared but not yet enforced; validation at submit time arrives in stage A3.
+The context also carries an abort `signal`, the `attempt` number and an
+`idempotencyKey` stable per run and step. Params are validated against
+`paramsSchema` before `execute` runs, with defaults filled in. For checks a
+schema cannot express, implement `validate(params)`; it runs at submit time on
+the params as written.
 
 ## Error Handling
 

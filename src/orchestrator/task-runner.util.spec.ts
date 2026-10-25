@@ -1,7 +1,19 @@
 import { runWorkflow, RunInputError } from './task-runner.util';
 import { validateWorkflow, WorkflowDefinition, WorkflowDefinitionError, WorkflowStep } from './workflow-definition';
 import { Task, TaskContext, TaskExecutionError } from '../tasks/task.interface';
+import { Type } from '@sinclair/typebox';
 import { fakeTask, silentLogger } from '../testing/task-context';
+
+// A task with a real schema, to check validation of params
+const typed: Task = {
+  paramsSchema: Type.Object(
+    { url: Type.String({ pattern: '^https?://' }), retries: Type.Optional(Type.Integer({ maximum: 5, default: 1 })) },
+    { additionalProperties: false }
+  ),
+  outputSchema: Type.Any(),
+  validate: params => (params.url === 'http://forbidden' ? ['params.url is forbidden'] : []),
+  execute: async ({ params }) => params,
+};
 
 const lookup = (tasks: Record<string, Task>) => new Map(Object.entries(tasks));
 const quiet = { createLogger: () => silentLogger };
@@ -106,6 +118,27 @@ describe('validateWorkflow', () => {
   it('rejects references to undeclared input', () => {
     expect(issuesOf(() => validate([step('a', 't', [], { x: '{{ input.org }}' })]))).toEqual([
       'Step "a" params.x references undeclared input "org"',
+    ]);
+  });
+
+  it("checks params against the task's schema, skipping values that are expressions", () => {
+    const tasks = lookup({ typed });
+    const check = (params: object) => () =>
+      validateWorkflow(workflow([step('a', 'typed', [], params)], { u: 'string' }), tasks);
+
+    expect(issuesOf(check({ url: 'ftp://x', retries: 9, extra: 1 }))).toEqual([
+      'Step "a" params must NOT have additional properties',
+      'Step "a" params.url must match pattern "^https?://"',
+      'Step "a" params.retries must be <= 5',
+    ]);
+    expect(issuesOf(check({}))).toEqual(["Step \"a\" params must have required property 'url'"]);
+    expect(() => check({ url: '{{ input.u }}' })()).not.toThrow();
+    expect(() => check({ url: 'https://{{ input.u }}' })()).not.toThrow();
+  });
+
+  it("runs the task's own checks", () => {
+    expect(issuesOf(() => validateWorkflow(workflow([step('a', 'typed', [], { url: 'http://forbidden' })]), lookup({ typed })))).toEqual([
+      'Step "a" params.url is forbidden',
     ]);
   });
 
@@ -250,6 +283,19 @@ describe('runWorkflow', () => {
       name: 'TaskExecutionError',
       taskId: 'a',
       message: 'Could not resolve params: params.x: expression "$error("nope")" failed: nope',
+    });
+  });
+
+  it('validates resolved params before the task runs, filling in defaults', async () => {
+    const definition = workflow([step('a', 'typed', [], { url: '{{ input.u }}' })], { u: 'string' });
+
+    const ok = await runWorkflow(definition, lookup({ typed }), { ...quiet, input: { u: 'https://x' } });
+    expect(ok.steps.a.output).toEqual({ url: 'https://x', retries: 1 });
+
+    await expect(runWorkflow(definition, lookup({ typed }), { ...quiet, input: { u: 'nope' } })).rejects.toMatchObject({
+      name: 'TaskExecutionError',
+      taskId: 'a',
+      message: 'Invalid params: params.url must match pattern "^https?://"',
     });
   });
 
