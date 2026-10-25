@@ -1,0 +1,1728 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OrchaLite Builder</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --border: #dfe3e8;
+    --text: #1c2430;
+    --muted: #667085;
+    --accent: #0f766e;
+    --accent-text: #ffffff;
+    --accent-soft: #e6f4f2;
+    --code-bg: #f1f3f6;
+    --node: #ffffff;
+    --edge: #98a2b3;
+    --grid: #e7eaee;
+    --ok: #15803d;
+    --ok-bg: #e7f6ec;
+    --bad: #b42318;
+    --bad-bg: #fdecea;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12161c;
+      --panel: #1a2029;
+      --border: #2c3542;
+      --text: #e6e9ee;
+      --muted: #98a2b3;
+      --accent: #2dd4bf;
+      --accent-text: #06231f;
+      --accent-soft: #123430;
+      --code-bg: #141a22;
+      --node: #212936;
+      --edge: #5b6676;
+      --grid: #1d242e;
+      --ok: #4ade80;
+      --ok-bg: #153222;
+      --bad: #f97066;
+      --bad-bg: #3a1a17;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+    flex-wrap: wrap;
+  }
+  header h1 { margin: 0; font-size: 17px; }
+  header a { color: var(--muted); font-size: 13px; }
+  .grow { flex: 1; }
+  #planTitle { font-weight: 600; }
+  #dirty { color: var(--muted); font-size: 12.5px; }
+  main {
+    display: grid;
+    grid-template-columns: 240px minmax(0, 1fr) 380px;
+    min-height: 0;
+  }
+  @media (max-width: 1000px) {
+    main { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 60vh auto; overflow: auto; }
+  }
+  aside, .center { min-height: 0; min-width: 0; }
+  aside { background: var(--panel); overflow: auto; padding: 14px; }
+  aside.left { border-right: 1px solid var(--border); }
+  aside.right { border-left: 1px solid var(--border); }
+  h2 {
+    margin: 16px 0 8px;
+    font-size: 11.5px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  h2:first-child { margin-top: 0; }
+  h3 { margin: 14px 0 6px; font-size: 13px; }
+  .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  select, button, textarea, input { font: inherit; color: inherit; }
+  select, button, input[type="text"], input:not([type]) {
+    border: 1px solid var(--border);
+    background: var(--panel);
+    border-radius: 6px;
+    padding: 5px 9px;
+  }
+  input[type="text"], input:not([type]), select.full, textarea { width: 100%; }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--muted); }
+  button:disabled { opacity: 0.55; cursor: default; }
+  button:focus-visible, select:focus-visible, textarea:focus-visible, input:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
+  button.danger { color: var(--bad); }
+  button.link { border: none; background: none; padding: 0; color: var(--accent); }
+  textarea {
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--code-bg);
+    font: 12.5px/1.5 var(--mono);
+    resize: vertical;
+    tab-size: 2;
+  }
+  .hint { color: var(--muted); font-size: 12.5px; }
+  .list { display: grid; gap: 4px; }
+  .item {
+    display: grid;
+    gap: 1px;
+    width: 100%;
+    text-align: left;
+    padding: 7px 9px;
+  }
+  .item.selected { border-color: var(--accent); background: var(--accent-soft); }
+  .item .sub { color: var(--muted); font-size: 12px; }
+  .palette-item { cursor: grab; user-select: none; }
+  .palette-item code { font: 12.5px var(--mono); font-weight: 600; }
+
+  .center { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
+  .toolbar { display: flex; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--panel); flex-wrap: wrap; align-items: center; }
+  .tabs { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .tabs button { border: none; border-radius: 0; }
+  .tabs button[aria-selected="true"] { background: var(--accent); color: var(--accent-text); }
+  #boardWrap { overflow: auto; position: relative; }
+  #board {
+    position: relative;
+    width: 2400px;
+    height: 1600px;
+    background-image: radial-gradient(var(--grid) 1.2px, transparent 1.2px);
+    background-size: 20px 20px;
+  }
+  #board.drop-target { outline: 2px dashed var(--accent); outline-offset: -6px; }
+  #edges { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+  .edge { fill: none; stroke: var(--edge); stroke-width: 2; }
+  .edge-hit { fill: none; stroke: transparent; stroke-width: 14; cursor: pointer; pointer-events: stroke; }
+  .edge.selected { stroke: var(--accent); stroke-width: 3; }
+  .edge.temp { stroke: var(--accent); stroke-dasharray: 6 4; }
+  .arrow { fill: var(--edge); }
+  .node {
+    position: absolute;
+    width: 190px;
+    height: 64px;
+    background: var(--node);
+    border: 1.5px solid var(--border);
+    border-radius: 9px;
+    padding: 9px 12px;
+    cursor: move;
+    user-select: none;
+    box-shadow: 0 1px 2px rgb(0 0 0 / 6%);
+  }
+  .node.selected { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .node.invalid { border-color: var(--bad); border-style: dashed; }
+  .node.ok { border-color: var(--ok); background: var(--ok-bg); }
+  .node.failed { border-color: var(--bad); background: var(--bad-bg); }
+  .node .id { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .node .task { color: var(--muted); font: 12px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .port {
+    position: absolute;
+    top: 50%;
+    width: 14px;
+    height: 14px;
+    margin-top: -7px;
+    border-radius: 50%;
+    border: 2px solid var(--edge);
+    background: var(--panel);
+  }
+  .port.in { left: -8px; cursor: default; }
+  .port.out { right: -8px; cursor: crosshair; }
+  .port.out:hover { border-color: var(--accent); background: var(--accent); }
+  .empty-board {
+    position: absolute;
+    top: 80px;
+    left: 80px;
+    max-width: 420px;
+    color: var(--muted);
+    pointer-events: none;
+  }
+  #jsonView { display: none; padding: 12px; min-height: 0; }
+  #jsonView textarea { height: 100%; min-height: 300px; }
+  .center.json #boardWrap { display: none; }
+  .center.json #jsonView { display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: 8px; }
+  .issues { border-top: 1px solid var(--border); background: var(--panel); max-height: 140px; overflow: auto; padding: 6px 12px; }
+  .issues:empty { display: none; }
+  .issue { color: var(--bad); font-size: 12.5px; padding: 2px 0; overflow-wrap: anywhere; }
+  .issue button { font-size: 12.5px; }
+
+  .field { margin-top: 10px; }
+  .field label { display: flex; gap: 6px; align-items: baseline; font-weight: 600; font-size: 13px; margin-bottom: 3px; }
+  .field label code { font: 12.5px var(--mono); }
+  .field .req { color: var(--bad); font-weight: 600; }
+  .field .type { color: var(--muted); font: 11.5px var(--mono); font-weight: 400; margin-left: auto; }
+  .field .help { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .field .err { color: var(--bad); font-size: 12px; margin-top: 2px; }
+  .field textarea { min-height: 64px; }
+  .chips { display: flex; gap: 5px; flex-wrap: wrap; }
+  .chip {
+    font: 12px var(--mono);
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+  }
+  button.chip:hover { border-color: var(--accent); color: var(--accent); }
+  .chip .x { margin-left: 4px; color: var(--muted); }
+  .input-row {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 10px 10px;
+    margin-top: 8px;
+  }
+  .input-row .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .input-row .grid > div { min-width: 0; }
+  .input-row small { color: var(--muted); display: block; font-size: 11.5px; }
+  .banner { padding: 9px 11px; border-radius: 6px; margin: 10px 0; overflow-wrap: anywhere; }
+  .banner.ok { background: var(--ok-bg); color: var(--ok); }
+  .banner.bad { background: var(--bad-bg); color: var(--bad); }
+  .banner ul { margin: 4px 0 0; padding-left: 18px; }
+  details.result { border: 1px solid var(--border); border-radius: 8px; margin-top: 6px; }
+  details.result summary { padding: 7px 10px; cursor: pointer; display: flex; gap: 8px; align-items: baseline; }
+  details.result summary code { color: var(--muted); font: 12px var(--mono); }
+  details.result summary .out { margin-left: auto; color: var(--muted); font-size: 12px; }
+  pre {
+    margin: 0;
+    padding: 9px;
+    background: var(--code-bg);
+    font: 12px/1.5 var(--mono);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    max-height: 320px;
+    overflow: auto;
+  }
+  #toast {
+    position: fixed;
+    bottom: 18px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--text);
+    color: var(--bg);
+    padding: 8px 14px;
+    border-radius: 8px;
+    font-size: 13px;
+    opacity: 0;
+    transition: opacity 0.2s;
+    pointer-events: none;
+    max-width: 90vw;
+  }
+  #toast.show { opacity: 1; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+</style>
+</head>
+<body>
+<header>
+  <h1>OrchaLite Builder</h1>
+  <span id="planTitle"></span>
+  <span id="dirty"></span>
+  <span class="grow"></span>
+  <button id="save" class="primary" type="button" title="Ctrl/Cmd + S">Save</button>
+  <button id="download" type="button">Download JSON</button>
+  <a href="/">Classic editor</a>
+</header>
+
+<main>
+  <aside class="left">
+    <h2>Plans</h2>
+    <div class="row">
+      <button id="newPlan" type="button">New plan</button>
+      <button id="upload" type="button">Upload JSON</button>
+      <input id="fileInput" type="file" accept=".json,application/json" multiple hidden>
+    </div>
+    <p class="hint">Or drop .json files anywhere on the page. Plans are saved in this browser.</p>
+    <div class="list" id="plans"></div>
+
+    <h2>Start from a template</h2>
+    <div class="list" id="templates"><span class="hint">Loading…</span></div>
+
+    <h2>Tasks</h2>
+    <p class="hint" style="margin-top: 0">Drag a task onto the canvas, or double-click it.</p>
+    <div class="list" id="palette"><span class="hint">Loading…</span></div>
+  </aside>
+
+  <div class="center" id="center">
+    <div class="toolbar">
+      <div class="tabs" role="tablist">
+        <button type="button" role="tab" id="tabCanvas" aria-selected="true">Canvas</button>
+        <button type="button" role="tab" id="tabJson" aria-selected="false">JSON</button>
+      </div>
+      <button id="layout" type="button">Auto-layout</button>
+      <span class="hint" id="boardHint">Drag from a step's right dot to another step to connect them. Delete removes the selection.</span>
+    </div>
+    <div id="boardWrap">
+      <div id="board">
+        <svg id="edges" aria-hidden="true"></svg>
+      </div>
+    </div>
+    <div id="jsonView">
+      <textarea id="jsonEditor" spellcheck="false" aria-label="Workflow JSON"></textarea>
+      <div class="hint" id="jsonStatus">Edits here update the canvas as soon as the JSON is valid.</div>
+    </div>
+    <div class="issues" id="issues" aria-live="polite"></div>
+  </div>
+
+  <aside class="right">
+    <div class="tabs" role="tablist" style="margin-bottom: 10px">
+      <button type="button" role="tab" id="tabInspect" aria-selected="true">Inspect</button>
+      <button type="button" role="tab" id="tabRun" aria-selected="false">Run</button>
+    </div>
+    <div id="inspector"></div>
+    <div id="runPanel" hidden></div>
+  </aside>
+</main>
+
+<div id="toast" role="status"></div>
+
+<script>
+// ===========================================================================
+// Storage. Plans live in localStorage behind this small interface, so it can
+// be swapped for the server's /workflows API once that exists.
+// ===========================================================================
+
+const LocalPlanStore = {
+  KEY: 'orchalite.plans.v1',
+  readAll() {
+    try { return JSON.parse(localStorage.getItem(this.KEY)) ?? []; } catch { return []; }
+  },
+  writeAll(plans) {
+    try { localStorage.setItem(this.KEY, JSON.stringify(plans)); return true; } catch { return false; }
+  },
+  list() { return this.readAll().sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)); },
+  get(id) { return this.readAll().find(p => p.id === id) ?? null; },
+  save(plan) {
+    const plans = this.readAll().filter(p => p.id !== plan.id);
+    plans.push(plan);
+    return this.writeAll(plans);
+  },
+  remove(id) { return this.writeAll(this.readAll().filter(p => p.id !== id)); },
+};
+const store = LocalPlanStore;
+
+const prefs = {
+  get(key) { try { return localStorage.getItem(`orchalite.builder.${key}`); } catch { return null; } },
+  set(key, value) { try { localStorage.setItem(`orchalite.builder.${key}`, value); } catch { /* optional */ } },
+};
+
+// ===========================================================================
+// State
+// ===========================================================================
+
+const NODE_W = 190, NODE_H = 64, GAP_X = 70, GAP_Y = 26, ORIGIN = 40;
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const ID_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const INPUT_TYPES = ['string', 'number', 'integer', 'boolean', 'object', 'array'];
+
+const state = {
+  tasks: [],          // from GET /tasks
+  templates: [],      // from /examples.json
+  plan: null,         // { id, definition, layout, description, version, updatedAt, lastInput }
+  dirty: false,
+  selection: null,    // { kind: 'step', id } | { kind: 'edge', from, to } | null
+  stepResults: {},    // step id -> 'ok' | 'failed', from the last run
+  rightTab: 'inspect',
+  lastField: null,    // last focused param field, for inserting references
+};
+
+const $ = id => document.getElementById(id);
+const taskByName = name => state.tasks.find(t => t.name === name);
+const steps = () => state.plan.definition.steps;
+const stepById = id => steps().find(s => s.id === id);
+
+function el(tag, props = {}, children = []) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(props)) {
+    if (key === 'style' && typeof value === 'string') node.style.cssText = value;
+    else if (key.startsWith('data-') || key.startsWith('aria-')) node.setAttribute(key, value);
+    else node[key] = value;
+  }
+  for (const child of [].concat(children)) if (child != null) node.append(child);
+  return node;
+}
+
+function svgEl(tag, attrs = {}) {
+  const node = document.createElementNS(SVG_NS, tag);
+  for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, value);
+  return node;
+}
+
+let toastTimer;
+function toast(text) {
+  $('toast').textContent = text;
+  $('toast').classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => $('toast').classList.remove('show'), 2600);
+}
+
+const newId = () => (crypto.randomUUID ? crypto.randomUUID() : `p${Date.now()}${Math.random().toString(16).slice(2)}`);
+const clone = value => JSON.parse(JSON.stringify(value));
+
+// ===========================================================================
+// Plans
+// ===========================================================================
+
+function blankDefinition() {
+  return { name: 'untitled-workflow', input: {}, steps: [] };
+}
+
+function makePlan(definition, extra = {}) {
+  return {
+    id: newId(),
+    definition: normalizeDefinition(definition),
+    layout: {},
+    description: '',
+    version: 0,
+    updatedAt: new Date().toISOString(),
+    lastInput: {},
+    ...extra,
+  };
+}
+
+/** Keeps only what the server accepts, with defaults for missing parts */
+function normalizeDefinition(raw) {
+  const def = {
+    name: typeof raw?.name === 'string' && raw.name ? raw.name : 'untitled-workflow',
+    input: raw?.input && typeof raw.input === 'object' && !Array.isArray(raw.input) ? clone(raw.input) : {},
+    steps: Array.isArray(raw?.steps) ? raw.steps.map(step => ({
+      id: String(step?.id ?? ''),
+      task: String(step?.task ?? ''),
+      ...(step?.params && typeof step.params === 'object' ? { params: clone(step.params) } : {}),
+      dependsOn: Array.isArray(step?.dependsOn) ? step.dependsOn.map(String) : [],
+    })) : [],
+  };
+  return def;
+}
+
+/** The definition as sent to the server: empty input and params left out */
+function exportDefinition() {
+  const { name, input, steps } = state.plan.definition;
+  const out = { name };
+  if (Object.keys(input).length) out.input = clone(input);
+  out.steps = steps.map(({ id, task, params, dependsOn }) => ({
+    id,
+    task,
+    ...(params && Object.keys(params).length ? { params: clone(params) } : {}),
+    dependsOn: [...dependsOn],
+  }));
+  return out;
+}
+
+function openPlan(plan) {
+  state.plan = plan;
+  state.selection = null;
+  state.stepResults = {};
+  state.dirty = false;
+  if (steps().some(s => !plan.layout[s.id])) autoLayout(false);
+  prefs.set('lastPlan', plan.id);
+  renderAll();
+}
+
+function confirmDiscard() {
+  return !state.dirty || confirm('This plan has unsaved changes. Discard them?');
+}
+
+function markDirty() {
+  state.dirty = true;
+  renderHeader();
+}
+
+function savePlan() {
+  const plan = state.plan;
+  plan.version += 1;
+  plan.updatedAt = new Date().toISOString();
+  if (!store.save(clone(plan))) {
+    toast('Could not save: browser storage is unavailable or full');
+    plan.version -= 1;
+    return;
+  }
+  state.dirty = false;
+  renderHeader();
+  renderPlans();
+  toast(`Saved "${plan.definition.name}" (version ${plan.version})`);
+}
+
+function uniqueName(base) {
+  const names = new Set(store.list().map(p => p.definition.name));
+  if (!names.has(base)) return base;
+  let n = 2;
+  while (names.has(`${base}-${n}`)) n++;
+  return `${base}-${n}`;
+}
+
+/** Accepts a bare definition, an { workflow, input } template, or an array of either */
+function importJson(text, fileName = 'upload') {
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch (error) {
+    toast(`${fileName}: not valid JSON (${error.message})`);
+    return 0;
+  }
+  const items = Array.isArray(data) ? data : [data];
+  let imported = 0, last = null;
+  for (const item of items) {
+    const definition = item?.workflow ?? item?.definition ?? item;
+    if (!definition || !Array.isArray(definition.steps)) continue;
+    const plan = makePlan(definition, { lastInput: item?.input ?? {}, description: item?.label ?? '' });
+    state.plan = plan;
+    autoLayout(false);
+    plan.version = 1;
+    store.save(clone(plan));
+    imported++;
+    last = plan;
+  }
+  if (!imported) {
+    toast(`${fileName}: no workflow found (expected an object with a "steps" array)`);
+    if (last === null && state.plan && !store.get(state.plan.id) && !state.dirty) { /* keep current */ }
+    return 0;
+  }
+  openPlan(last);
+  toast(`Imported ${imported} plan${imported === 1 ? '' : 's'} from ${fileName}`);
+  return imported;
+}
+
+async function importFiles(files) {
+  if (!confirmDiscard()) return;
+  for (const file of files) importJson(await file.text(), file.name);
+}
+
+function downloadJson() {
+  const blob = new Blob([JSON.stringify(exportDefinition(), null, 2) + '\n'], { type: 'application/json' });
+  const link = el('a', { href: URL.createObjectURL(blob), download: `${state.plan.definition.name || 'workflow'}.json` });
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+}
+
+// ===========================================================================
+// Editing operations
+// ===========================================================================
+
+function suggestStepId(taskName) {
+  const base = (taskName.split('.').pop() || 'step').replace(/[^A-Za-z0-9_]/g, '_').replace(/^(\d)/, '_$1');
+  const ids = new Set(steps().map(s => s.id));
+  if (!ids.has(base)) return base;
+  let n = 2;
+  while (ids.has(`${base}${n}`)) n++;
+  return `${base}${n}`;
+}
+
+function addStep(taskName, x, y) {
+  const id = suggestStepId(taskName);
+  steps().push({ id, task: taskName, params: {}, dependsOn: [] });
+  if (x == null) {
+    const right = Math.max(ORIGIN - NODE_W - GAP_X, ...Object.values(state.plan.layout).map(p => p.x));
+    x = right + NODE_W + GAP_X;
+    y = ORIGIN;
+  }
+  state.plan.layout[id] = { x: Math.max(0, Math.round(x)), y: Math.max(0, Math.round(y)) };
+  state.selection = { kind: 'step', id };
+  setRightTab('inspect');
+  markDirty();
+  renderAll();
+}
+
+function removeStep(id) {
+  state.plan.definition.steps = steps().filter(s => s.id !== id);
+  for (const step of steps()) step.dependsOn = step.dependsOn.filter(dep => dep !== id);
+  delete state.plan.layout[id];
+  state.selection = null;
+  markDirty();
+  renderAll();
+}
+
+/** True if `from` can already reach `to` through dependsOn, i.e. to -> from would close a loop */
+function dependsOnTransitively(stepId, targetId, seen = new Set()) {
+  if (stepId === targetId) return true;
+  if (seen.has(stepId)) return false;
+  seen.add(stepId);
+  return (stepById(stepId)?.dependsOn ?? []).some(dep => dependsOnTransitively(dep, targetId, seen));
+}
+
+function connect(fromId, toId) {
+  const target = stepById(toId);
+  if (!target || fromId === toId) return;
+  if (target.dependsOn.includes(fromId)) return toast(`"${toId}" already depends on "${fromId}"`);
+  if (dependsOnTransitively(fromId, toId)) return toast(`That would create a loop: "${fromId}" already depends on "${toId}"`);
+  target.dependsOn.push(fromId);
+  state.selection = { kind: 'edge', from: fromId, to: toId };
+  markDirty();
+  renderAll();
+}
+
+function disconnect(fromId, toId) {
+  const target = stepById(toId);
+  if (target) target.dependsOn = target.dependsOn.filter(dep => dep !== fromId);
+  state.selection = null;
+  markDirty();
+  renderAll();
+}
+
+const escapeRegExp = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** Renames a step everywhere: dependsOn, layout and steps.<id> inside expressions */
+function renameStep(oldId, newId) {
+  if (oldId === newId) return true;
+  if (!newId) return toast('A step needs an id'), false;
+  if (stepById(newId)) return toast(`There is already a step "${newId}"`), false;
+  const pattern = new RegExp(`(\\bsteps\\.)${escapeRegExp(oldId)}\\b`, 'g');
+  const rewrite = value => {
+    if (typeof value === 'string') return value.replace(pattern, `$1${newId}`);
+    if (Array.isArray(value)) return value.map(rewrite);
+    if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, rewrite(v)]));
+    return value;
+  };
+  for (const step of steps()) {
+    if (step.id === oldId) step.id = newId;
+    step.dependsOn = step.dependsOn.map(dep => (dep === oldId ? newId : dep));
+    if (step.params) step.params = rewrite(step.params);
+  }
+  state.plan.layout[newId] = state.plan.layout[oldId];
+  delete state.plan.layout[oldId];
+  if (state.selection?.id === oldId) state.selection.id = newId;
+  delete state.stepResults[oldId];
+  markDirty();
+  return true;
+}
+
+/** Columns by longest dependency chain, rows in definition order */
+function computeLevels() {
+  const ids = new Set(steps().map(s => s.id));
+  const level = {};
+  let progressed = true;
+  while (progressed) {
+    progressed = false;
+    for (const step of steps()) {
+      if (step.id in level) continue;
+      const deps = step.dependsOn.filter(dep => ids.has(dep) && dep !== step.id);
+      if (deps.every(dep => dep in level)) {
+        level[step.id] = deps.length ? Math.max(...deps.map(dep => level[dep])) + 1 : 0;
+        progressed = true;
+      }
+    }
+  }
+  const last = Math.max(-1, ...Object.values(level)) + 1;
+  for (const step of steps()) if (!(step.id in level)) level[step.id] = last; // in a cycle
+  return level;
+}
+
+function autoLayout(dirty = true) {
+  const level = computeLevels();
+  const rows = {};
+  for (const step of steps()) {
+    const col = level[step.id];
+    rows[col] = (rows[col] ?? 0) + 1;
+    state.plan.layout[step.id] = { x: ORIGIN + col * (NODE_W + GAP_X), y: ORIGIN + (rows[col] - 1) * (NODE_H + GAP_Y) };
+  }
+  if (dirty) {
+    markDirty();
+    renderBoard();
+  }
+}
+
+// ===========================================================================
+// Checks. Quick feedback while editing; the server's checks on run are the
+// final word (schemas with expressions resolved, JSONata syntax and so on).
+// ===========================================================================
+
+function isExpression(value) {
+  return typeof value === 'string' && value.includes('{{');
+}
+
+function expressionsIn(value, out = []) {
+  if (typeof value === 'string') {
+    for (const match of value.matchAll(/\{\{([\s\S]*?)\}\}/g)) out.push(match[1]);
+  } else if (Array.isArray(value)) value.forEach(v => expressionsIn(v, out));
+  else if (value && typeof value === 'object') Object.values(value).forEach(v => expressionsIn(v, out));
+  return out;
+}
+
+/** Every step this one depends on, directly or not; safe on cyclic graphs */
+function upstreamOf(id) {
+  const seen = new Set();
+  const pending = [...(stepById(id)?.dependsOn ?? [])];
+  while (pending.length) {
+    const next = pending.pop();
+    if (seen.has(next)) continue;
+    seen.add(next);
+    pending.push(...(stepById(next)?.dependsOn ?? []));
+  }
+  seen.delete(id);
+  return seen;
+}
+
+function checkPlan() {
+  const issues = []; // { stepId?, text }
+  const def = state.plan.definition;
+  const ids = new Set();
+  if (!def.name.trim()) issues.push({ text: 'The workflow needs a name' });
+  if (!def.steps.length) issues.push({ text: 'Add at least one step' });
+
+  for (const step of def.steps) {
+    if (!step.id) issues.push({ stepId: step.id, text: 'A step has no id' });
+    else if (ids.has(step.id)) issues.push({ stepId: step.id, text: `Duplicate step id "${step.id}"` });
+    else if (!ID_PATTERN.test(step.id)) issues.push({ stepId: step.id, text: `Step id "${step.id}" can't be used in {{ steps.${step.id}.output }}; use letters, digits and _` });
+    ids.add(step.id);
+  }
+
+  const level = computeLevels();
+  const cyclic = def.steps.filter(s => s.dependsOn.some(dep => ids.has(dep) && level[dep] >= level[s.id]));
+  if (cyclic.length) issues.push({ text: `Circular dependency involving: ${cyclic.map(s => s.id).join(', ')}` });
+
+  const declared = new Set(Object.keys(def.input));
+  for (const step of def.steps) {
+    const where = `Step "${step.id}"`;
+    for (const dep of step.dependsOn) {
+      if (!ids.has(dep)) issues.push({ stepId: step.id, text: `${where} depends on unknown step "${dep}"` });
+    }
+    const task = taskByName(step.task);
+    if (state.tasks.length && !task) issues.push({ stepId: step.id, text: `${where} uses unknown task "${step.task}"` });
+    if (task) {
+      for (const key of task.paramsSchema.required ?? []) {
+        if (step.params?.[key] === undefined) issues.push({ stepId: step.id, text: `${where} is missing required param "${key}"` });
+      }
+    }
+    const upstream = upstreamOf(step.id);
+    for (const expr of expressionsIn(step.params ?? {})) {
+      for (const [, name] of expr.matchAll(/\binput\.([A-Za-z_]\w*)/g)) {
+        if (!declared.has(name)) issues.push({ stepId: step.id, text: `${where} uses undeclared input "${name}"` });
+      }
+      for (const [, ref] of expr.matchAll(/\bsteps\.([A-Za-z_]\w*)/g)) {
+        if (!ids.has(ref)) issues.push({ stepId: step.id, text: `${where} references unknown step "${ref}"` });
+        else if (!upstream.has(ref)) issues.push({ stepId: step.id, text: `${where} reads steps.${ref} but does not depend on "${ref}"` });
+      }
+    }
+  }
+
+  for (const [name, declaration] of Object.entries(def.input)) {
+    if (!ID_PATTERN.test(name)) issues.push({ text: `Input "${name}" needs a name made of letters, digits and _` });
+    const type = typeof declaration === 'string' ? declaration : declaration?.type;
+    if (!INPUT_TYPES.includes(type)) issues.push({ text: `Input "${name}" has unknown type "${type}"` });
+  }
+  return issues;
+}
+
+// ===========================================================================
+// Rendering: header, side lists
+// ===========================================================================
+
+function renderHeader() {
+  const plan = state.plan;
+  $('planTitle').textContent = plan.definition.name;
+  $('dirty').textContent = state.dirty ? '• unsaved changes' : plan.version ? `saved · version ${plan.version}` : 'not saved yet';
+  document.title = `${plan.definition.name} · OrchaLite Builder`;
+}
+
+function renderPlans() {
+  const plans = store.list();
+  const host = $('plans');
+  if (!plans.length) {
+    host.replaceChildren(el('span', { className: 'hint', textContent: 'No saved plans yet.' }));
+    return;
+  }
+  host.replaceChildren(...plans.map(plan => {
+    const row = el('button', { type: 'button', className: `item${plan.id === state.plan?.id ? ' selected' : ''}` }, [
+      el('span', { textContent: plan.definition.name }),
+      el('span', { className: 'sub', textContent: `${plan.definition.steps.length} steps · v${plan.version} · ${new Date(plan.updatedAt).toLocaleString()}` }),
+    ]);
+    row.addEventListener('click', () => {
+      if (plan.id === state.plan.id || !confirmDiscard()) return;
+      openPlan(store.get(plan.id));
+    });
+    return row;
+  }));
+}
+
+function renderTemplates() {
+  const host = $('templates');
+  if (!state.templates.length) {
+    host.replaceChildren(el('span', { className: 'hint', textContent: 'No templates available.' }));
+    return;
+  }
+  host.replaceChildren(...state.templates.map(template => {
+    const row = el('button', { type: 'button', className: 'item' }, [
+      el('span', { textContent: template.workflow.name }),
+      el('span', { className: 'sub', textContent: template.label }),
+    ]);
+    row.addEventListener('click', () => {
+      if (!confirmDiscard()) return;
+      const definition = clone(template.workflow);
+      definition.name = uniqueName(definition.name);
+      const plan = makePlan(definition, { lastInput: clone(template.input ?? {}), description: template.label });
+      openPlan(plan);
+      state.dirty = true;
+      renderHeader();
+      toast('Template copied into a new plan. Save it to keep it.');
+    });
+    return row;
+  }));
+}
+
+function renderPalette() {
+  const host = $('palette');
+  if (!state.tasks.length) {
+    host.replaceChildren(el('span', { className: 'hint', textContent: 'Could not load the task catalogue.' }));
+    return;
+  }
+  host.replaceChildren(...state.tasks.map(task => {
+    const item = el('div', { className: 'item palette-item', draggable: true, tabIndex: 0, title: 'Drag onto the canvas, or press Enter' }, [
+      el('code', { textContent: task.name }),
+      el('span', { className: 'sub', textContent: task.description ?? '' }),
+    ]);
+    item.addEventListener('dragstart', event => {
+      event.dataTransfer.setData('application/x-orchalite-task', task.name);
+      event.dataTransfer.effectAllowed = 'copy';
+    });
+    item.addEventListener('dblclick', () => addStep(task.name));
+    item.addEventListener('keydown', event => { if (event.key === 'Enter') addStep(task.name); });
+    item.style.border = '1px solid var(--border)';
+    item.style.borderRadius = '6px';
+    return item;
+  }));
+}
+
+// ===========================================================================
+// Rendering: board
+// ===========================================================================
+
+function nodeClass(step, invalidIds) {
+  const classes = ['node'];
+  if (state.selection?.kind === 'step' && state.selection.id === step.id) classes.push('selected');
+  if (state.stepResults[step.id]) classes.push(state.stepResults[step.id]);
+  else if (invalidIds.has(step.id)) classes.push('invalid');
+  return classes.join(' ');
+}
+
+function renderBoard() {
+  const board = $('board');
+  for (const node of [...board.querySelectorAll('.node, .empty-board')]) node.remove();
+  const invalidIds = new Set(checkPlan().map(i => i.stepId).filter(Boolean));
+
+  if (!steps().length) {
+    board.append(el('div', { className: 'empty-board' }, [
+      el('h3', { textContent: 'Empty plan' }),
+      el('p', { textContent: 'Drag a task from the left onto the canvas to add your first step, upload a JSON file, or start from a template.' }),
+    ]));
+  }
+
+  for (const step of steps()) {
+    const pos = state.plan.layout[step.id] ?? { x: ORIGIN, y: ORIGIN };
+    const node = el('div', { className: nodeClass(step, invalidIds), 'data-id': step.id, title: `${step.id} (${step.task})` }, [
+      el('div', { className: 'id', textContent: step.id }),
+      el('div', { className: 'task', textContent: step.task || '(no task)' }),
+      el('span', { className: 'port in', title: 'Input: connect another step\'s right dot here' }),
+      el('span', { className: 'port out', title: 'Drag to the step that should run after this one' }),
+    ]);
+    node.style.left = `${pos.x}px`;
+    node.style.top = `${pos.y}px`;
+    node.addEventListener('pointerdown', event => startNodeDrag(event, step.id));
+    node.querySelector('.port.out').addEventListener('pointerdown', event => startConnect(event, step.id));
+    board.append(node);
+  }
+
+  // Grow the board so nodes dragged far out stay reachable
+  const maxX = Math.max(0, ...Object.values(state.plan.layout).map(p => p.x)) + NODE_W + 400;
+  const maxY = Math.max(0, ...Object.values(state.plan.layout).map(p => p.y)) + NODE_H + 400;
+  board.style.width = `${Math.max(2400, maxX)}px`;
+  board.style.height = `${Math.max(1600, maxY)}px`;
+  renderEdges();
+}
+
+function edgePath(from, to) {
+  const x1 = from.x + NODE_W, y1 = from.y + NODE_H / 2, x2 = to.x, y2 = to.y + NODE_H / 2;
+  const dx = Math.max(40, Math.abs(x2 - x1) / 2);
+  return `M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`;
+}
+
+function renderEdges(temp) {
+  const svg = $('edges');
+  svg.replaceChildren();
+  const defs = svgEl('defs');
+  const marker = svgEl('marker', { id: 'arrow', viewBox: '0 0 8 8', refX: 7, refY: 4, markerWidth: 7, markerHeight: 7, orient: 'auto' });
+  marker.append(svgEl('path', { d: 'M0,0 L8,4 L0,8 z', class: 'arrow' }));
+  defs.append(marker);
+  svg.append(defs);
+
+  for (const step of steps()) {
+    for (const dep of step.dependsOn) {
+      const from = state.plan.layout[dep], to = state.plan.layout[step.id];
+      if (!from || !to) continue;
+      const d = edgePath(from, to);
+      const selected = state.selection?.kind === 'edge' && state.selection.from === dep && state.selection.to === step.id;
+      const hit = svgEl('path', { d, class: 'edge-hit' });
+      const title = svgEl('title');
+      title.textContent = `${step.id} depends on ${dep} (click to select)`;
+      hit.append(title);
+      hit.addEventListener('pointerdown', event => {
+        event.stopPropagation();
+        select({ kind: 'edge', from: dep, to: step.id });
+      });
+      svg.append(svgEl('path', { d, class: `edge${selected ? ' selected' : ''}`, 'marker-end': 'url(#arrow)' }), hit);
+    }
+  }
+  if (temp) svg.append(svgEl('path', { d: temp, class: 'edge temp' }));
+}
+
+function boardPoint(event) {
+  const rect = $('board').getBoundingClientRect();
+  return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+}
+
+function startNodeDrag(event, id) {
+  if (event.button !== 0 || event.target.classList.contains('port')) return;
+  event.preventDefault();
+  const node = event.currentTarget;
+  const start = boardPoint(event);
+  const origin = { ...state.plan.layout[id] };
+  let moved = false;
+  node.setPointerCapture(event.pointerId);
+
+  const onMove = moveEvent => {
+    const p = boardPoint(moveEvent);
+    const x = Math.max(0, Math.round((origin.x + p.x - start.x) / 10) * 10);
+    const y = Math.max(0, Math.round((origin.y + p.y - start.y) / 10) * 10);
+    if (!moved && Math.abs(p.x - start.x) + Math.abs(p.y - start.y) < 3) return;
+    moved = true;
+    state.plan.layout[id] = { x, y };
+    node.style.left = `${x}px`;
+    node.style.top = `${y}px`;
+    renderEdges();
+  };
+  const onUp = () => {
+    node.removeEventListener('pointermove', onMove);
+    node.removeEventListener('pointerup', onUp);
+    if (moved) markDirty();
+    select({ kind: 'step', id });
+  };
+  node.addEventListener('pointermove', onMove);
+  node.addEventListener('pointerup', onUp);
+}
+
+function startConnect(event, fromId) {
+  event.preventDefault();
+  event.stopPropagation();
+  const port = event.currentTarget;
+  port.setPointerCapture(event.pointerId);
+  const from = state.plan.layout[fromId];
+
+  const onMove = moveEvent => {
+    const p = boardPoint(moveEvent);
+    const x1 = from.x + NODE_W, y1 = from.y + NODE_H / 2;
+    const dx = Math.max(40, Math.abs(p.x - x1) / 2);
+    renderEdges(`M${x1},${y1} C${x1 + dx},${y1} ${p.x - dx},${p.y} ${p.x},${p.y}`);
+  };
+  const onUp = upEvent => {
+    port.removeEventListener('pointermove', onMove);
+    port.removeEventListener('pointerup', onUp);
+    const target = document.elementFromPoint(upEvent.clientX, upEvent.clientY)?.closest('.node');
+    if (target && target.dataset.id !== fromId) connect(fromId, target.dataset.id);
+    else renderEdges();
+  };
+  port.addEventListener('pointermove', onMove);
+  port.addEventListener('pointerup', onUp);
+}
+
+function select(selection) {
+  state.selection = selection;
+  setRightTab('inspect');
+  renderBoard();
+  renderInspector();
+}
+
+// ===========================================================================
+// Rendering: issues and JSON view
+// ===========================================================================
+
+function renderIssues() {
+  const issues = checkPlan();
+  $('issues').replaceChildren(...issues.map(issue => {
+    const row = el('div', { className: 'issue' });
+    if (issue.stepId && stepById(issue.stepId)) {
+      const link = el('button', { type: 'button', className: 'link', textContent: issue.text });
+      link.addEventListener('click', () => select({ kind: 'step', id: issue.stepId }));
+      row.append(link);
+    } else {
+      row.textContent = issue.text;
+    }
+    return row;
+  }));
+}
+
+let jsonEditing = false;
+function renderJson() {
+  if (jsonEditing) return; // don't fight the user's cursor
+  $('jsonEditor').value = JSON.stringify(exportDefinition(), null, 2);
+  $('jsonStatus').textContent = 'Edits here update the canvas as soon as the JSON is valid.';
+  $('jsonStatus').style.color = '';
+}
+
+function applyJsonEdit() {
+  let raw;
+  try {
+    raw = JSON.parse($('jsonEditor').value);
+  } catch (error) {
+    $('jsonStatus').textContent = `Not valid JSON yet: ${error.message}`;
+    $('jsonStatus').style.color = 'var(--bad)';
+    return;
+  }
+  if (!raw || !Array.isArray(raw.steps)) {
+    $('jsonStatus').textContent = 'The workflow needs a "steps" array.';
+    $('jsonStatus').style.color = 'var(--bad)';
+    return;
+  }
+  state.plan.definition = normalizeDefinition(raw);
+  const known = new Set(steps().map(s => s.id));
+  for (const id of Object.keys(state.plan.layout)) if (!known.has(id)) delete state.plan.layout[id];
+  if (steps().some(s => !state.plan.layout[s.id])) {
+    const kept = clone(state.plan.layout);
+    autoLayout(false);
+    Object.assign(state.plan.layout, kept); // keep positions the user chose, place only new steps
+  }
+  if (state.selection?.kind === 'step' && !stepById(state.selection.id)) state.selection = null;
+  $('jsonStatus').textContent = 'Canvas updated.';
+  $('jsonStatus').style.color = '';
+  markDirty();
+  jsonEditing = true;
+  renderAll();
+  jsonEditing = false;
+}
+
+function setView(view) {
+  $('center').classList.toggle('json', view === 'json');
+  $('tabCanvas').setAttribute('aria-selected', String(view === 'canvas'));
+  $('tabJson').setAttribute('aria-selected', String(view === 'json'));
+  $('boardHint').hidden = view === 'json';
+  $('layout').hidden = view === 'json';
+  if (view === 'json') renderJson();
+  prefs.set('view', view);
+}
+
+// ===========================================================================
+// Rendering: inspector
+// ===========================================================================
+
+function schemaType(schema) {
+  if (!schema || typeof schema !== 'object') return 'any';
+  if (Array.isArray(schema.anyOf) && schema.anyOf.every(s => 'const' in s)) return 'enum';
+  if (Array.isArray(schema.enum)) return 'enum';
+  if (schema.type === 'object' && schema.patternProperties) return 'map';
+  return schema.type ?? (schema.anyOf ? 'union' : 'any');
+}
+
+function enumValues(schema) {
+  return schema.enum ?? schema.anyOf.map(s => s.const);
+}
+
+/** Text typed into a scalar field becomes a number when it looks like one, else stays a string (an expression) */
+function parseScalar(text, type) {
+  if (text === '') return undefined;
+  if ((type === 'number' || type === 'integer') && /^-?\d+(\.\d+)?$/.test(text.trim())) return Number(text);
+  return text;
+}
+
+/** Free-form fields take JSON; anything that is not JSON is kept as a string, e.g. "{{ steps.a.output }}" */
+function parseLoose(text) {
+  if (text.trim() === '') return undefined;
+  try { return JSON.parse(text); } catch { return text; }
+}
+
+const showLoose = value => (value === undefined ? '' : typeof value === 'string' ? value : JSON.stringify(value, null, 2));
+
+function trackField(input) {
+  input.addEventListener('focus', () => { state.lastField = input; });
+}
+
+function insertReference(text) {
+  const input = state.lastField;
+  if (input && document.body.contains(input)) {
+    const start = input.selectionStart ?? input.value.length;
+    const end = input.selectionEnd ?? start;
+    input.value = input.value.slice(0, start) + text + input.value.slice(end);
+    input.focus();
+    input.setSelectionRange(start + text.length, start + text.length);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  } else {
+    navigator.clipboard?.writeText(text);
+    toast(`Copied ${text}. Click into a field first to insert it there.`);
+  }
+}
+
+function paramField(step, key, schema, required) {
+  const type = schemaType(schema);
+  const value = step.params?.[key];
+  const set = next => {
+    step.params = step.params ?? {};
+    if (next === undefined) delete step.params[key];
+    else step.params[key] = next;
+    markDirty();
+    renderIssues();
+    renderBoardClassesOnly();
+    if (!$('center').classList.contains('json')) return;
+    renderJson();
+  };
+
+  let control;
+  if (type === 'enum' || type === 'boolean') {
+    const options = type === 'boolean' ? [true, false] : enumValues(schema);
+    control = el('select', { className: 'full' }, [
+      el('option', { value: '', textContent: schema.default !== undefined ? `(default: ${schema.default})` : '(not set)' }),
+      ...options.map(option => el('option', { value: JSON.stringify(option), textContent: String(option) })),
+    ]);
+    if (isExpression(value)) control.append(el('option', { value: JSON.stringify(value), textContent: value }));
+    control.value = value === undefined ? '' : JSON.stringify(value);
+    control.addEventListener('change', () => set(control.value === '' ? undefined : JSON.parse(control.value)));
+  } else if (type === 'string' || type === 'number' || type === 'integer') {
+    control = el('input', {
+      value: value === undefined ? '' : String(value),
+      placeholder: schema.default !== undefined ? `default: ${schema.default}` : (type === 'string' ? '' : `a ${type}, or {{ ... }}`),
+      spellcheck: false,
+    });
+    trackField(control);
+    control.addEventListener('input', () => set(parseScalar(control.value, type)));
+  } else {
+    const box = el('textarea', { value: showLoose(value), spellcheck: false, placeholder: 'JSON, or a {{ ... }} expression' });
+    trackField(box);
+    const error = el('div', { className: 'err' });
+    box.addEventListener('input', () => {
+      const next = parseLoose(box.value);
+      const looksJson = /^\s*[[{]/.test(box.value) && typeof next === 'string';
+      error.textContent = looksJson ? 'This looks like JSON but does not parse; it will be sent as text.' : '';
+      set(next);
+    });
+    control = el('div', {}, [box, error]);
+  }
+
+  const typeLabel = type === 'enum' ? 'one of' : type === 'map' ? 'object' : type === 'any' || type === 'union' ? 'JSON' : type;
+  return el('div', { className: 'field' }, [
+    el('label', {}, [
+      el('code', { textContent: key }),
+      required ? el('span', { className: 'req', textContent: '*', title: 'Required' }) : null,
+      el('span', { className: 'type', textContent: typeLabel }),
+    ]),
+    control,
+    schema.description ? el('div', { className: 'help', textContent: schema.description }) : null,
+  ]);
+}
+
+/** Only refreshes node outlines, so typing in the inspector doesn't rebuild the board */
+function renderBoardClassesOnly() {
+  const invalidIds = new Set(checkPlan().map(i => i.stepId).filter(Boolean));
+  for (const node of $('board').querySelectorAll('.node')) {
+    const step = stepById(node.dataset.id);
+    if (step) node.className = nodeClass(step, invalidIds);
+  }
+}
+
+function referenceChips(step) {
+  const refs = [
+    ...Object.keys(state.plan.definition.input).map(name => `{{ input.${name} }}`),
+    ...[...upstreamOf(step.id)].map(id => `{{ steps.${id}.output }}`),
+  ];
+  if (!refs.length) {
+    return el('p', { className: 'hint', textContent: 'Declare run inputs in the plan settings, or connect an earlier step, to reference values here.' });
+  }
+  return el('div', { className: 'chips' }, refs.map(ref => {
+    const chip = el('button', { type: 'button', className: 'chip', textContent: ref, title: 'Insert into the last field you clicked' });
+    chip.addEventListener('pointerdown', event => event.preventDefault()); // keep the field focused
+    chip.addEventListener('click', () => insertReference(ref));
+    return chip;
+  }));
+}
+
+function renderStepInspector(step) {
+  const host = $('inspector');
+  const task = taskByName(step.task);
+
+  const idInput = el('input', { value: step.id, spellcheck: false });
+  idInput.addEventListener('change', () => {
+    if (renameStep(step.id, idInput.value.trim())) renderAll();
+    else idInput.value = step.id;
+  });
+
+  const taskSelect = el('select', { className: 'full' }, state.tasks.map(t => el('option', { value: t.name, textContent: t.name })));
+  if (!task) taskSelect.prepend(el('option', { value: step.task, textContent: `${step.task || '(none)'} (unknown)` }));
+  taskSelect.value = step.task;
+  taskSelect.addEventListener('change', () => {
+    step.task = taskSelect.value;
+    const known = taskByName(step.task)?.paramsSchema?.properties ?? {};
+    if (step.params) for (const key of Object.keys(step.params)) if (!(key in known)) delete step.params[key];
+    markDirty();
+    renderAll();
+  });
+
+  const deps = el('div', { className: 'chips' }, step.dependsOn.length
+    ? step.dependsOn.map(dep => {
+      const chip = el('button', { type: 'button', className: 'chip', title: `Remove the dependency on ${dep}` }, [dep, el('span', { className: 'x', textContent: '×' })]);
+      chip.addEventListener('click', () => disconnect(dep, step.id));
+      return chip;
+    })
+    : [el('span', { className: 'hint', textContent: 'None. This step starts first.' })]);
+
+  const remove = el('button', { type: 'button', className: 'danger', textContent: 'Delete step' });
+  remove.addEventListener('click', () => removeStep(step.id));
+
+  const fields = [];
+  if (task) {
+    const props = task.paramsSchema.properties ?? {};
+    const required = new Set(task.paramsSchema.required ?? []);
+    for (const [key, schema] of Object.entries(props)) fields.push(paramField(step, key, schema, required.has(key)));
+    const extra = Object.keys(step.params ?? {}).filter(key => !(key in props));
+    if (extra.length) fields.push(el('p', { className: 'err', textContent: `Params this task does not accept: ${extra.join(', ')} (edit them in the JSON tab)` }));
+  } else {
+    fields.push(el('p', { className: 'hint', textContent: 'Pick a known task to edit its params.' }));
+  }
+
+  host.replaceChildren(
+    el('h2', { textContent: 'Step' }),
+    el('div', { className: 'field' }, [el('label', { textContent: 'Id' }), idInput,
+      el('div', { className: 'help', textContent: 'Used in {{ steps.<id>.output }}. Renaming updates references.' })]),
+    el('div', { className: 'field' }, [el('label', { textContent: 'Task' }), taskSelect,
+      task?.description ? el('div', { className: 'help', textContent: task.description }) : null]),
+    el('div', { className: 'field' }, [el('label', { textContent: 'Runs after' }), deps]),
+    el('h2', { textContent: 'Params' }),
+    el('p', { className: 'hint', style: 'margin: 0 0 4px', textContent: 'Insert a reference into the last field you clicked:' }),
+    referenceChips(step),
+    ...fields,
+    el('div', { className: 'row', style: 'margin-top: 16px' }, [remove]),
+  );
+}
+
+function renderEdgeInspector({ from, to }) {
+  const remove = el('button', { type: 'button', className: 'danger', textContent: 'Remove connection' });
+  remove.addEventListener('click', () => disconnect(from, to));
+  $('inspector').replaceChildren(
+    el('h2', { textContent: 'Connection' }),
+    el('p', {}, [el('b', { textContent: to }), document.createTextNode(' runs after '), el('b', { textContent: from }), document.createTextNode('.')]),
+    el('p', { className: 'hint', textContent: `It can read {{ steps.${from}.output }} in its params.` }),
+    remove,
+  );
+}
+
+function inputDeclarationRow(name, declaration) {
+  const decl = typeof declaration === 'string' ? { type: declaration } : { ...declaration };
+  const commit = (nextName, nextDecl) => {
+    const input = state.plan.definition.input;
+    // Rebuild to keep the declaration order stable through renames
+    state.plan.definition.input = Object.fromEntries(Object.entries(input).map(([k, v]) => (k === name ? [nextName, nextDecl] : [k, v])));
+    markDirty();
+    renderIssues();
+  };
+  const cleaned = d => Object.fromEntries(Object.entries(d).filter(([, v]) => v !== undefined && v !== ''));
+
+  const nameInput = el('input', { value: name, spellcheck: false });
+  nameInput.addEventListener('change', () => {
+    const next = nameInput.value.trim();
+    if (next === name) return;
+    if (!next || next in state.plan.definition.input) {
+      toast(next ? `There is already an input "${next}"` : 'An input needs a name');
+      nameInput.value = name;
+      return;
+    }
+    commit(next, cleaned(decl));
+    renderInspector();
+  });
+
+  const typeSelect = el('select', { className: 'full' }, INPUT_TYPES.map(t => el('option', { value: t, textContent: t })));
+  typeSelect.value = decl.type;
+  typeSelect.addEventListener('change', () => {
+    decl.type = typeSelect.value;
+    for (const key of ['pattern', 'minLength', 'maxLength', 'minimum', 'maximum']) delete decl[key];
+    delete decl.default;
+    commit(name, cleaned(decl));
+    renderInspector();
+  });
+
+  const defaultInput = el('input', {
+    value: decl.default === undefined ? '' : (typeof decl.default === 'string' ? decl.default : JSON.stringify(decl.default)),
+    placeholder: 'none, so required',
+    spellcheck: false,
+  });
+  const defaultError = el('small');
+  defaultInput.addEventListener('input', () => {
+    const text = defaultInput.value;
+    defaultError.textContent = '';
+    if (text === '') delete decl.default;
+    else {
+      const parsed = coerceInput(text, decl.type);
+      if (parsed.error) { defaultError.textContent = parsed.error; return; }
+      decl.default = parsed.value;
+    }
+    commit(name, cleaned(decl));
+  });
+
+  const rules = [];
+  const ruleField = (key, label, numeric) => {
+    const input = el('input', { value: decl[key] ?? '', spellcheck: false });
+    input.addEventListener('input', () => {
+      decl[key] = input.value === '' ? undefined : numeric ? Number(input.value) : input.value;
+      commit(name, cleaned(decl));
+    });
+    return el('div', {}, [el('small', { textContent: label }), input]);
+  };
+  if (decl.type === 'string') rules.push(ruleField('pattern', 'Pattern (regex)', false), ruleField('maxLength', 'Max length', true));
+  if (decl.type === 'number' || decl.type === 'integer') rules.push(ruleField('minimum', 'Minimum', true), ruleField('maximum', 'Maximum', true));
+
+  const remove = el('button', { type: 'button', className: 'link danger', textContent: 'Remove' });
+  remove.addEventListener('click', () => {
+    delete state.plan.definition.input[name];
+    markDirty();
+    renderInspector();
+    renderIssues();
+  });
+
+  return el('div', { className: 'input-row' }, [
+    el('div', { className: 'grid' }, [
+      el('div', {}, [el('small', { textContent: 'Name' }), nameInput]),
+      el('div', {}, [el('small', { textContent: 'Type' }), typeSelect]),
+      el('div', { style: 'grid-column: 1 / 3' }, [el('small', { textContent: 'Default (leave empty to make it required)' }), defaultInput, defaultError]),
+      ...rules,
+    ]),
+    el('div', { className: 'row', style: 'justify-content: space-between; margin-top: 6px' }, [
+      el('small', { textContent: `Use as {{ input.${name} }}` }),
+      remove,
+    ]),
+  ]);
+}
+
+function renderPlanInspector() {
+  const def = state.plan.definition;
+  const nameInput = el('input', { value: def.name, spellcheck: false });
+  nameInput.addEventListener('input', () => {
+    def.name = nameInput.value;
+    markDirty();
+    renderIssues();
+  });
+  const description = el('textarea', { value: state.plan.description ?? '', placeholder: 'What this plan is for (kept with the plan, not sent to the server)' });
+  description.style.fontFamily = 'inherit';
+  description.addEventListener('input', () => { state.plan.description = description.value; markDirty(); });
+
+  const addInput = el('button', { type: 'button', textContent: 'Add input' });
+  addInput.addEventListener('click', () => {
+    let n = 1;
+    while (`param${n}` in def.input) n++;
+    def.input[`param${n}`] = { type: 'string' };
+    markDirty();
+    renderInspector();
+  });
+
+  const duplicate = el('button', { type: 'button', textContent: 'Duplicate plan' });
+  duplicate.addEventListener('click', () => {
+    if (!confirmDiscard()) return;
+    const copy = makePlan(clone(def), { layout: clone(state.plan.layout), description: state.plan.description, lastInput: clone(state.plan.lastInput ?? {}) });
+    copy.definition.name = uniqueName(`${def.name}-copy`);
+    openPlan(copy);
+    state.dirty = true;
+    renderHeader();
+  });
+  const remove = el('button', { type: 'button', className: 'danger', textContent: 'Delete plan' });
+  remove.addEventListener('click', () => {
+    if (!confirm(`Delete "${def.name}" from this browser?`)) return;
+    store.remove(state.plan.id);
+    const next = store.list()[0];
+    state.dirty = false;
+    openPlan(next ? store.get(next.id) : makePlan(blankDefinition()));
+  });
+
+  $('inspector').replaceChildren(
+    el('h2', { textContent: 'Plan' }),
+    el('div', { className: 'field' }, [el('label', { textContent: 'Name' }), nameInput]),
+    el('div', { className: 'field' }, [el('label', { textContent: 'Description' }), description]),
+    el('h2', { textContent: 'Run inputs' }),
+    el('p', { className: 'hint', style: 'margin: 0', textContent: 'Values supplied each time the plan runs. They are checked before any step starts.' }),
+    ...Object.entries(def.input).map(([name, declaration]) => inputDeclarationRow(name, declaration)),
+    el('div', { className: 'row', style: 'margin-top: 8px' }, [addInput]),
+    el('h2', { textContent: 'Manage' }),
+    el('div', { className: 'row' }, [duplicate, remove]),
+    el('p', { className: 'hint', textContent: 'Select a step or connection on the canvas to edit it.' }),
+  );
+}
+
+function renderInspector() {
+  const sel = state.selection;
+  if (sel?.kind === 'step' && stepById(sel.id)) renderStepInspector(stepById(sel.id));
+  else if (sel?.kind === 'edge' && stepById(sel.to)?.dependsOn.includes(sel.from)) renderEdgeInspector(sel);
+  else {
+    state.selection = null;
+    renderPlanInspector();
+  }
+}
+
+// ===========================================================================
+// Run panel: a form from the plan's input declarations, checked here first,
+// then by the server, before any step runs
+// ===========================================================================
+
+function declarationOf(declaration) {
+  return typeof declaration === 'string' ? { type: declaration } : declaration ?? {};
+}
+
+function coerceInput(text, type) {
+  switch (type) {
+    case 'number':
+    case 'integer': {
+      if (!/^-?\d+(\.\d+)?([eE][-+]?\d+)?$/.test(text.trim())) return { error: `Must be a ${type}` };
+      const value = Number(text);
+      if (type === 'integer' && !Number.isInteger(value)) return { error: 'Must be a whole number' };
+      return { value };
+    }
+    case 'boolean':
+      if (text === 'true' || text === 'false') return { value: text === 'true' };
+      return { error: 'Must be true or false' };
+    case 'object':
+    case 'array': {
+      try {
+        const value = JSON.parse(text);
+        const ok = type === 'array' ? Array.isArray(value) : value && typeof value === 'object' && !Array.isArray(value);
+        return ok ? { value } : { error: `Must be a JSON ${type}` };
+      } catch (error) {
+        return { error: `Not valid JSON: ${error.message}` };
+      }
+    }
+    default:
+      return { value: text };
+  }
+}
+
+function checkRules(value, decl) {
+  if (decl.enum && !decl.enum.some(option => JSON.stringify(option) === JSON.stringify(value))) return `Must be one of ${decl.enum.join(', ')}`;
+  if (typeof value === 'string') {
+    if (decl.minLength != null && value.length < decl.minLength) return `At least ${decl.minLength} characters`;
+    if (decl.maxLength != null && value.length > decl.maxLength) return `At most ${decl.maxLength} characters`;
+    if (decl.pattern) {
+      try {
+        if (!new RegExp(decl.pattern, 'u').test(value)) return `Must match ${decl.pattern}`;
+      } catch { /* the server reports a bad pattern */ }
+    }
+  }
+  if (typeof value === 'number') {
+    if (decl.minimum != null && value < decl.minimum) return `At least ${decl.minimum}`;
+    if (decl.maximum != null && value > decl.maximum) return `At most ${decl.maximum}`;
+  }
+  return null;
+}
+
+function renderRunPanel() {
+  const host = $('runPanel');
+  const def = state.plan.definition;
+  const fields = [];
+  const readers = [];
+
+  for (const [name, declaration] of Object.entries(def.input)) {
+    const decl = declarationOf(declaration);
+    const hasDefault = decl.default !== undefined;
+    const saved = state.plan.lastInput?.[name];
+    const initial = saved === undefined ? '' : typeof saved === 'string' ? saved : JSON.stringify(saved);
+    let control;
+    if (decl.type === 'boolean') {
+      control = el('select', { className: 'full' }, [
+        el('option', { value: '', textContent: hasDefault ? `(default: ${decl.default})` : '(choose)' }),
+        el('option', { value: 'true', textContent: 'true' }),
+        el('option', { value: 'false', textContent: 'false' }),
+      ]);
+      control.value = initial;
+    } else if (decl.type === 'object' || decl.type === 'array') {
+      control = el('textarea', { value: initial, spellcheck: false, placeholder: hasDefault ? `default: ${JSON.stringify(decl.default)}` : `a JSON ${decl.type}` });
+    } else {
+      control = el('input', { value: initial, spellcheck: false, placeholder: hasDefault ? `default: ${decl.default}` : '' });
+    }
+    const error = el('div', { className: 'err' });
+    const hints = [];
+    if (decl.pattern) hints.push(`matches ${decl.pattern}`);
+    if (decl.minimum != null) hints.push(`≥ ${decl.minimum}`);
+    if (decl.maximum != null) hints.push(`≤ ${decl.maximum}`);
+    if (decl.enum) hints.push(`one of ${decl.enum.join(', ')}`);
+
+    fields.push(el('div', { className: 'field' }, [
+      el('label', {}, [
+        el('code', { textContent: name }),
+        hasDefault ? null : el('span', { className: 'req', textContent: '*', title: 'Required' }),
+        el('span', { className: 'type', textContent: decl.type ?? 'any' }),
+      ]),
+      control,
+      hints.length ? el('div', { className: 'help', textContent: hints.join(' · ') }) : null,
+      error,
+    ]));
+
+    readers.push(() => {
+      error.textContent = '';
+      const text = control.value;
+      if (text === '') {
+        if (hasDefault) return { name, skip: true };
+        error.textContent = 'Required';
+        return { name, error: true };
+      }
+      const parsed = coerceInput(text, decl.type);
+      const problem = parsed.error ?? checkRules(parsed.value, decl);
+      if (problem) {
+        error.textContent = problem;
+        return { name, error: true };
+      }
+      return { name, value: parsed.value };
+    });
+  }
+
+  const results = el('div', { id: 'runResults' });
+  const runButton = el('button', { type: 'button', className: 'primary', textContent: 'Run plan' });
+  runButton.addEventListener('click', async () => {
+    const read = readers.map(r => r());
+    if (read.some(r => r.error)) {
+      results.replaceChildren(el('div', { className: 'banner bad', textContent: 'Fix the highlighted inputs first. Nothing was run.' }));
+      return;
+    }
+    const planIssues = checkPlan();
+    if (planIssues.length) {
+      results.replaceChildren(el('div', { className: 'banner bad' }, [
+        el('b', { textContent: 'The plan has problems. Nothing was run.' }),
+        el('ul', {}, planIssues.map(i => el('li', { textContent: i.text }))),
+      ]));
+      return;
+    }
+    const input = Object.fromEntries(read.filter(r => !r.skip).map(r => [r.name, r.value]));
+    state.plan.lastInput = input;
+    await runPlan(input, runButton, results);
+  });
+
+  host.replaceChildren(
+    el('h2', { textContent: `Run "${def.name}"` }),
+    Object.keys(def.input).length
+      ? el('p', { className: 'hint', style: 'margin: 0', textContent: 'Inputs are checked here, then again by the server, before any step starts.' })
+      : el('p', { className: 'hint', style: 'margin: 0', textContent: 'This plan declares no run inputs. Add some in the plan settings to make it reusable.' }),
+    ...fields,
+    el('div', { className: 'row', style: 'margin-top: 14px' }, [runButton, el('span', { className: 'hint', textContent: 'Runs the plan as it is on the canvas, saved or not.' })]),
+    results,
+  );
+}
+
+function describe(value) {
+  if (value === undefined) return 'no output';
+  if (Array.isArray(value)) return `${value.length} item${value.length === 1 ? '' : 's'}`;
+  if (value && typeof value === 'object') return `object, ${Object.keys(value).length} keys`;
+  return String(value).slice(0, 40);
+}
+
+async function runPlan(input, button, results) {
+  button.disabled = true;
+  button.textContent = 'Running…';
+  state.stepResults = {};
+  renderBoardClassesOnly();
+  results.replaceChildren(el('p', { className: 'hint', textContent: 'Running… results appear when every step has finished.' }));
+  const started = performance.now();
+  try {
+    const response = await fetch('/workflow/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ definition: exportDefinition(), input }),
+    });
+    const text = await response.text();
+    let body = {};
+    try { body = text ? JSON.parse(text) : {}; } catch { body = { message: text }; }
+    const seconds = ((performance.now() - started) / 1000).toFixed(1);
+
+    if (response.ok) {
+      // Shape: { runId, steps: { <id>: { status, output } } }
+      const stepResults = body.steps ?? {};
+      for (const step of steps()) if (stepResults[step.id]) state.stepResults[step.id] = 'ok';
+      results.replaceChildren(el('div', { className: 'banner ok' }, [
+        el('b', { textContent: `Completed in ${seconds}s.` }),
+        body.runId ? el('div', { className: 'hint', textContent: `Run ${body.runId}` }) : null,
+      ]));
+      for (const step of steps()) {
+        const output = stepResults[step.id]?.output;
+        results.append(el('details', { className: 'result' }, [
+          el('summary', {}, [el('b', { textContent: step.id }), el('code', { textContent: step.task }), el('span', { className: 'out', textContent: describe(output) })]),
+          el('pre', { textContent: output === undefined ? '(no output)' : JSON.stringify(output, null, 2) }),
+        ]));
+      }
+    } else {
+      if (body.stepId) state.stepResults[body.stepId] = 'failed';
+      const kind = response.status >= 500 ? `Step "${body.stepId ?? '?'}" failed` : 'Rejected before running';
+      const messages = [].concat(body.message ?? `HTTP ${response.status}`);
+      const details = (body.errors ?? []).map(e => (typeof e === 'string' ? e : `${e.property}: ${Object.values(e.constraints ?? {}).join(', ')}`));
+      if (messages.length > 1) details.unshift(...messages.slice(1));
+      const banner = el('div', { className: 'banner bad' }, [el('b', { textContent: `${kind} after ${seconds}s. ` }), document.createTextNode(messages[0])]);
+      if (details.length) banner.append(el('ul', {}, details.map(d => el('li', { textContent: d }))));
+      results.replaceChildren(banner);
+    }
+  } catch (error) {
+    results.replaceChildren(el('div', { className: 'banner bad', textContent: `Could not reach the server: ${error.message}` }));
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Run plan';
+    renderBoardClassesOnly();
+  }
+}
+
+function setRightTab(tab) {
+  state.rightTab = tab;
+  $('tabInspect').setAttribute('aria-selected', String(tab === 'inspect'));
+  $('tabRun').setAttribute('aria-selected', String(tab === 'run'));
+  $('inspector').hidden = tab !== 'inspect';
+  $('runPanel').hidden = tab !== 'run';
+  if (tab === 'run') renderRunPanel();
+}
+
+// ===========================================================================
+// Wiring
+// ===========================================================================
+
+function renderAll() {
+  renderHeader();
+  renderPlans();
+  renderBoard();
+  renderIssues();
+  renderJson();
+  if (state.rightTab === 'run') renderRunPanel();
+  else renderInspector();
+}
+
+$('newPlan').addEventListener('click', () => {
+  if (!confirmDiscard()) return;
+  const definition = blankDefinition();
+  definition.name = uniqueName('untitled-workflow');
+  openPlan(makePlan(definition));
+});
+$('save').addEventListener('click', savePlan);
+$('download').addEventListener('click', downloadJson);
+$('upload').addEventListener('click', () => $('fileInput').click());
+$('fileInput').addEventListener('change', event => {
+  importFiles([...event.target.files]);
+  event.target.value = '';
+});
+$('layout').addEventListener('click', () => autoLayout());
+$('tabCanvas').addEventListener('click', () => setView('canvas'));
+$('tabJson').addEventListener('click', () => setView('json'));
+$('tabInspect').addEventListener('click', () => { setRightTab('inspect'); renderInspector(); });
+$('tabRun').addEventListener('click', () => setRightTab('run'));
+
+let jsonTimer;
+$('jsonEditor').addEventListener('input', () => {
+  clearTimeout(jsonTimer);
+  jsonTimer = setTimeout(applyJsonEdit, 300);
+});
+
+// Click on empty canvas clears the selection
+$('board').addEventListener('pointerdown', event => {
+  if (event.target === $('board') || event.target === $('edges')) select(null);
+});
+
+// Tasks dragged from the palette, and .json files dropped anywhere
+const isFileDrag = event => [...(event.dataTransfer?.types ?? [])].includes('Files');
+$('board').addEventListener('dragover', event => {
+  if ([...event.dataTransfer.types].includes('application/x-orchalite-task')) {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+    $('board').classList.add('drop-target');
+  }
+});
+$('board').addEventListener('dragleave', () => $('board').classList.remove('drop-target'));
+$('board').addEventListener('drop', event => {
+  $('board').classList.remove('drop-target');
+  const name = event.dataTransfer.getData('application/x-orchalite-task');
+  if (!name) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const p = boardPoint(event);
+  addStep(name, p.x - NODE_W / 2, p.y - NODE_H / 2);
+});
+document.addEventListener('dragover', event => { if (isFileDrag(event)) event.preventDefault(); });
+document.addEventListener('drop', event => {
+  if (!isFileDrag(event)) return;
+  event.preventDefault();
+  importFiles([...event.dataTransfer.files].filter(f => f.name.endsWith('.json') || f.type === 'application/json'));
+});
+
+document.addEventListener('keydown', event => {
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
+    event.preventDefault();
+    savePlan();
+    return;
+  }
+  const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName);
+  if (typing || !(event.key === 'Delete' || event.key === 'Backspace')) return;
+  const sel = state.selection;
+  if (sel?.kind === 'step') { event.preventDefault(); removeStep(sel.id); }
+  if (sel?.kind === 'edge') { event.preventDefault(); disconnect(sel.from, sel.to); }
+});
+
+window.addEventListener('beforeunload', event => {
+  if (state.dirty) {
+    event.preventDefault();
+    event.returnValue = '';
+  }
+});
+
+async function boot() {
+  const [tasks, templates] = await Promise.all([
+    fetch('/tasks').then(r => (r.ok ? r.json() : [])).catch(() => []),
+    fetch('/examples.json').then(r => (r.ok ? r.json() : [])).catch(() => []),
+  ]);
+  state.tasks = tasks;
+  // examples.json also holds deliberately broken workflows for the classic editor; they are not templates
+  state.templates = templates.filter(t => t?.workflow && !/^invalid\b/i.test(t.label ?? ''));
+  renderPalette();
+  renderTemplates();
+
+  const last = prefs.get('lastPlan') && store.get(prefs.get('lastPlan'));
+  const first = store.list()[0];
+  openPlan(last || (first ? store.get(first.id) : makePlan(blankDefinition())));
+  setView(prefs.get('view') === 'json' ? 'json' : 'canvas');
+}
+
+boot();
+</script>
+</body>
+</html>
