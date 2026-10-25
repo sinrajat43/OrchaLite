@@ -118,6 +118,8 @@
     resize: vertical;
     tab-size: 2;
   }
+  textarea.small { height: 90px; }
+  .label { display: block; margin-top: 12px; color: var(--muted); font-size: 12px; }
   .issues { margin: 10px 0 0; padding: 0; list-style: none; }
   .issues li {
     padding: 6px 10px;
@@ -203,6 +205,8 @@
         <button id="format" type="button">Format</button>
       </div>
       <textarea id="editor" spellcheck="false" aria-label="Workflow JSON"></textarea>
+      <label class="label" for="inputEditor">Run input (JSON object; the definition's <code>input</code> declares what it needs)</label>
+      <textarea id="inputEditor" class="small" spellcheck="false"></textarea>
       <ul class="issues" id="issues"></ul>
       <div class="row" style="margin-top: 12px">
         <button id="run" class="primary" type="button">Run workflow</button>
@@ -233,39 +237,57 @@
 const EXAMPLES = [
   {
     label: 'GitHub: repos with 1,000+ stars',
+    input: { org: 'github', minStars: 1000 },
     workflow: {
       name: 'github-repo-analysis',
+      input: { org: 'string', minStars: { type: 'integer', default: 1000 } },
       steps: [
-        { id: 'fetch', task: 'fetchRepos', params: { org: 'github', perPage: 100 }, dependsOn: [] },
-        { id: 'filter', task: 'filterRepos', params: { minStars: 1000 }, dependsOn: ['fetch'] },
-        { id: 'store', task: 'storeRepos', dependsOn: ['filter'] },
+        { id: 'fetch', task: 'fetchRepos', params: { org: '{{ input.org }}', perPage: 100 }, dependsOn: [] },
+        { id: 'filter', task: 'filterRepos', params: { repos: '{{ steps.fetch.output }}', minStars: '{{ input.minStars }}' }, dependsOn: ['fetch'] },
+        { id: 'store', task: 'storeRepos', params: { repos: '{{ steps.filter.output }}' }, dependsOn: ['filter'] },
       ],
     },
   },
   {
     label: 'Microsoft: 5,000+ stars into its own collection',
+    input: { org: 'microsoft' },
     workflow: {
       name: 'microsoft-repo-analysis',
+      input: { org: 'string' },
       steps: [
-        { id: 'fetch', task: 'fetchRepos', params: { org: 'microsoft', perPage: 50 }, dependsOn: [] },
-        { id: 'filter', task: 'filterRepos', params: { minStars: 5000 }, dependsOn: ['fetch'] },
-        { id: 'store', task: 'storeRepos', params: { collectionName: 'microsoft-repos' }, dependsOn: ['filter'] },
+        { id: 'fetch', task: 'fetchRepos', params: { org: '{{ input.org }}', perPage: 50 }, dependsOn: [] },
+        { id: 'filter', task: 'filterRepos', params: { repos: '{{ steps.fetch.output }}', minStars: 5000 }, dependsOn: ['fetch'] },
+        { id: 'store', task: 'storeRepos', params: { repos: '{{ steps.filter.output }}', collectionName: '{{ input.org }}-repos' }, dependsOn: ['filter'] },
       ],
     },
   },
   {
     label: 'Two branches from one fetch (nothing stored)',
+    input: { org: 'facebook' },
     workflow: {
       name: 'branching-example',
+      input: { org: 'string' },
       steps: [
-        { id: 'fetch', task: 'fetchRepos', params: { org: 'facebook', perPage: 100 }, dependsOn: [] },
-        { id: 'popular', task: 'filterRepos', params: { minStars: 10000 }, dependsOn: ['fetch'] },
-        { id: 'huge', task: 'filterRepos', params: { minStars: 50000 }, dependsOn: ['fetch'] },
+        { id: 'fetch', task: 'fetchRepos', params: { org: '{{ input.org }}', perPage: 100 }, dependsOn: [] },
+        { id: 'popular', task: 'filterRepos', params: { repos: '{{ steps.fetch.output }}', minStars: 10000 }, dependsOn: ['fetch'] },
+        { id: 'huge', task: 'filterRepos', params: { repos: '{{ steps.fetch.output }}', minStars: 50000 }, dependsOn: ['fetch'] },
+      ],
+    },
+  },
+  {
+    label: 'Invalid: reads a step it does not depend on',
+    input: {},
+    workflow: {
+      name: 'undeclared-dependency',
+      steps: [
+        { id: 'fetch', task: 'fetchRepos', dependsOn: [] },
+        { id: 'filter', task: 'filterRepos', params: { repos: '{{ steps.fetch.output }}' }, dependsOn: [] },
       ],
     },
   },
   {
     label: 'Invalid: circular dependency',
+    input: {},
     workflow: {
       name: 'cycle-example',
       steps: [
@@ -279,6 +301,7 @@ const EXAMPLES = [
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const $ = id => document.getElementById(id);
 const editor = $('editor');
+const inputEditor = $('inputEditor');
 
 let knownTasks = null; // null until loaded
 let stepStatus = {};   // step id -> 'done' | 'failed'
@@ -366,7 +389,19 @@ function readWorkflow() {
     }
   }
 
-  return { workflow, steps, issues, invalid, level, blocking: false };
+  let input = {};
+  try {
+    input = inputEditor.value.trim() ? JSON.parse(inputEditor.value) : {};
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      issues.push('Run input must be a JSON object.');
+      return { workflow, steps, issues, invalid, level, blocking: true };
+    }
+  } catch (error) {
+    issues.push(`Run input is not valid JSON: ${error.message}`);
+    return { workflow, steps, issues, invalid, level, blocking: true };
+  }
+
+  return { workflow, input, steps, issues, invalid, level, blocking: false };
 }
 
 // --- Graph ---------------------------------------------------------------
@@ -503,14 +538,14 @@ function renderValue(value) {
   return body;
 }
 
-function renderSuccess(steps, results, ms) {
+function renderSuccess(steps, { steps: results }, ms) {
   const host = $('results');
   host.replaceChildren(el('div', {
     className: 'banner ok',
     textContent: `Completed ${steps.length} step${steps.length === 1 ? '' : 's'} in ${(ms / 1000).toFixed(1)}s.`,
   }));
   for (const step of steps) {
-    const value = results[step.id];
+    const value = results[step.id]?.output;
     const summary = el('summary', {}, [
       el('b', { textContent: step.id }),
       el('code', { textContent: step.task }),
@@ -526,7 +561,6 @@ function renderFailure(status, body, ms) {
   for (const item of body.errors ?? []) {
     details.push(typeof item === 'string' ? item : `${item.property}: ${Object.values(item.constraints ?? {}).join(', ')}`);
   }
-  if (body.missingTasks) details.push(`Unknown tasks: ${body.missingTasks.join(', ')}`);
   if (messages.length > 1) details.unshift(...messages.splice(1));
 
   const kind = status >= 500 ? 'A step failed' : 'The workflow was rejected';
@@ -544,7 +578,7 @@ function renderFailure(status, body, ms) {
 function refresh() {
   const parsed = readWorkflow();
   $('issues').replaceChildren(...parsed.issues.map(text => el('li', { textContent: text })));
-  if (!parsed.blocking) renderGraph(parsed);
+  if (parsed.level) renderGraph(parsed);
   return parsed;
 }
 
@@ -564,7 +598,7 @@ async function run() {
     const response = await fetch('/workflow/run', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(parsed.workflow),
+      body: JSON.stringify({ definition: parsed.workflow, input: parsed.input }),
     });
     const text = await response.text();
     const body = text ? JSON.parse(text) : {};
@@ -588,6 +622,7 @@ async function run() {
 
 function loadExample(index) {
   editor.value = JSON.stringify(EXAMPLES[index].workflow, null, 2);
+  inputEditor.value = JSON.stringify(EXAMPLES[index].input ?? {}, null, 2);
   stepStatus = {};
   refresh();
 }
@@ -600,6 +635,7 @@ $('format').addEventListener('click', () => {
   } catch (error) { /* the issue list already says the JSON is invalid */ }
 });
 editor.addEventListener('input', () => { stepStatus = {}; refresh(); });
+inputEditor.addEventListener('input', () => refresh());
 editor.addEventListener('keydown', event => {
   if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) run();
 });

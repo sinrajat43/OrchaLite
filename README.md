@@ -67,44 +67,63 @@ npm run start:prod
 
 ## Defining Workflows
 
-Workflows are defined as JSON and sent to the `/workflow/run` endpoint. Each workflow consists of:
+A workflow definition is JSON:
 
-- A name
-- A list of steps, where each step has:
+- `name`
+- `input` (optional): the values a run must supply, by name. Each is a JSON
+  Schema type name (`string`, `number`, `integer`, `boolean`, `object`,
+  `array`) or a full JSON Schema; one with a `default` is optional.
+- `steps`, where each step has:
   - `id`: Unique identifier for the step
   - `task`: Name of the task to execute
-  - `params`: Optional parameters for the task
+  - `params`: Parameters for the task, which may contain expressions
   - `dependsOn`: Array of step IDs this step depends on
+
+### Expressions
+
+A string in `params` can contain [JSONata](https://jsonata.org) expressions in
+`{{ ... }}`. They read the run input as `input.<name>` and an upstream step's
+output as `steps.<id>.output`, and are resolved just before the step runs.
+
+- A string that is one expression, such as `"{{ steps.fetch.output }}"`,
+  becomes the expression's value, of any type.
+- A string that mixes text and expressions, such as `"org:{{ input.org }}"`,
+  becomes a string.
+- Inside a filter, `$$` reaches the root again:
+  `"{{ steps.fetch.output[stargazers_count >= $$.input.minStars] }}"`.
+  JSONata returns a single match as a value rather than a one-item array;
+  append `[]` to always get an array.
+
+A definition is checked before any step runs. Expressions must parse, may only
+read steps the step depends on (directly or indirectly), and may only read
+declared input.
 
 ### Example Workflow
 
 ```json
 {
   "name": "github-repo-analysis",
+  "input": {
+    "org": "string",
+    "minStars": { "type": "integer", "default": 1000 }
+  },
   "steps": [
     {
       "id": "fetch",
       "task": "fetchRepos",
-      "params": {
-        "org": "github",
-        "perPage": 100
-      },
+      "params": { "org": "{{ input.org }}", "perPage": 100 },
       "dependsOn": []
     },
     {
       "id": "filter",
       "task": "filterRepos",
-      "params": {
-        "minStars": 1000
-      },
+      "params": { "repos": "{{ steps.fetch.output }}", "minStars": "{{ input.minStars }}" },
       "dependsOn": ["fetch"]
     },
     {
       "id": "store",
       "task": "storeRepos",
-      "params": {
-        "collectionName": "popular-repos"
-      },
+      "params": { "repos": "{{ steps.filter.output }}", "collectionName": "popular-repos" },
       "dependsOn": ["filter"]
     }
   ]
@@ -125,12 +144,14 @@ Fetches repositories from GitHub API.
 Filters repositories based on star count.
 
 **Parameters:**
+- `repos`: The repositories to filter
 - `minStars` (optional): Minimum number of stars (default: 1000)
 
 ### 3. storeRepos
 Stores repository data in MongoDB.
 
 **Parameters:**
+- `repos`: The repositories to store
 - `collectionName` (optional): MongoDB collection name; letters, digits, `_` and `-` only (default: "repos")
 
 ## Web UI
@@ -149,25 +170,30 @@ Results appear when the whole run has finished; there is no run history or live 
 Returns the names of the registered tasks.
 
 ### POST /workflow/run
-Executes a workflow.
+Runs a workflow definition with the given input, inside the request.
 
 **Request Body:**
 ```json
 {
-  "name": "workflow-name",
-  "steps": [
-    {
-      "id": "step-id",
-      "task": "task-name",
-      "params": {},
-      "dependsOn": []
-    }
-  ]
+  "definition": {
+    "name": "workflow-name",
+    "input": { "org": "string" },
+    "steps": [
+      { "id": "step-id", "task": "task-name", "params": { "org": "{{ input.org }}" }, "dependsOn": [] }
+    ]
+  },
+  "input": { "org": "nestjs" }
 }
 ```
 
-**Response:**
-Returns the results of all steps in the workflow.
+**Response:** `201` with the run id and each step's status and output:
+
+```json
+{ "runId": "…", "steps": { "step-id": { "status": "succeeded", "output": "…" } } }
+```
+
+`400` lists every problem with the definition (`Invalid workflow definition`)
+or the input (`Invalid run input`). `500` names the step that failed.
 
 ## Project Structure
 

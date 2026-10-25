@@ -22,8 +22,8 @@ class OneTask extends TestTask {
 
 @TaskHandler({ name: 'double', version: 1 })
 class DoubleTask extends TestTask {
-  async execute({ input }: TaskContext<unknown, number>) {
-    return input * 2;
+  async execute({ params }: TaskContext<{ n: number }>) {
+    return params.n * 2;
   }
 }
 
@@ -53,11 +53,11 @@ describe('HTTP API', () => {
   let app: NestExpressApplication;
   let baseUrl: string;
 
-  const post = (body: unknown) =>
+  const post = (definition: unknown, input?: unknown) =>
     fetch(`${baseUrl}/workflow/run`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ definition, input }),
     });
 
   beforeAll(async () => {
@@ -92,29 +92,76 @@ describe('HTTP API', () => {
     );
   });
 
-  it('runs a workflow and returns every step result', async () => {
+  it('runs a workflow with input and returns every step result', async () => {
+    const response = await post(
+      {
+        name: 'ok',
+        input: { times: 'integer' },
+        steps: [
+          { id: 'a', task: 'one', dependsOn: [] },
+          { id: 'b', task: 'double', params: { n: '{{ steps.a.output * input.times }}' }, dependsOn: ['a'] },
+          { id: 'c', task: 'nothing', dependsOn: ['b'] },
+        ],
+      },
+      { times: 5 }
+    );
+
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.runId).toEqual(expect.any(String));
+    expect(body.steps).toEqual({
+      a: { status: 'succeeded', output: 1 },
+      b: { status: 'succeeded', output: 10 },
+      c: { status: 'succeeded' },
+    });
+  });
+
+  it('rejects run input that does not match the declared input', async () => {
+    const response = await post(
+      { name: 'bad', input: { times: 'integer' }, steps: [{ id: 'a', task: 'one', dependsOn: [] }] },
+      { times: 'many' }
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ message: 'Invalid run input', errors: ['input.times must be integer'] });
+  });
+
+  it('rejects an expression that reads a step it does not depend on', async () => {
     const response = await post({
-      name: 'ok',
+      name: 'bad',
       steps: [
         { id: 'a', task: 'one', dependsOn: [] },
-        { id: 'b', task: 'double', dependsOn: ['a'] },
-        { id: 'c', task: 'nothing', dependsOn: ['b'] },
+        { id: 'b', task: 'double', params: { n: '{{ steps.a.output }}' }, dependsOn: [] },
       ],
     });
 
-    expect(response.status).toBe(201);
-    expect(await response.json()).toEqual({ a: 1, b: 2 });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      message: 'Invalid workflow definition',
+      errors: ['Step "b" params.n references step "a", which it does not depend on'],
+    });
   });
 
   it('rejects a body that fails DTO validation', async () => {
     const response = await post({ name: 'bad', steps: [{ id: 'a', dependsOn: [] }] });
 
     expect(response.status).toBe(400);
-    expect((await response.json()).message).toContain('steps.0.task must be a string');
+    expect((await response.json()).message).toContain('definition.steps.0.task must be a string');
   });
 
   it('rejects unknown properties', async () => {
     const response = await post({ name: 'bad', extra: true, steps: [{ id: 'a', task: 'one', dependsOn: [] }] });
+
+    expect(response.status).toBe(400);
+  });
+
+  it('requires a definition', async () => {
+    const response = await fetch(`${baseUrl}/workflow/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input: {} }),
+    });
+
 
     expect(response.status).toBe(400);
   });
@@ -124,8 +171,8 @@ describe('HTTP API', () => {
 
     expect(response.status).toBe(400);
     expect(await response.json()).toMatchObject({
-      message: 'Invalid tasks in workflow',
-      missingTasks: ['nope'],
+      message: 'Invalid workflow definition',
+      errors: ['Step "a" uses unknown task "nope"'],
     });
   });
 

@@ -190,7 +190,7 @@ decide what a persisted step record has to store.
     principle.
   - Done when: adding a task means adding one file, and no engine file changes.
 
-- [ ] **A2. Expression-based data wiring**
+- [x] **A2. Expression-based data wiring** (done 2026-10-25)
   - Build: run-level `input`, `{{ ... }}` expressions over `input` and
     `steps.<id>.output`, resolved just before a step runs. Positional input is
     removed.
@@ -305,7 +305,6 @@ Several of these come back in later horizons, noted on each item.
 
 | Decision | Options | Leaning |
 | --- | --- | --- |
-| Expression language (needed for A2) | JSONata, JMESPath | JSONata: it reshapes data as well as querying it, so it also covers the `transform` task |
 | Where large step outputs live (needed for B1) | inline in `step_runs`, separate collection, object storage | Open |
 | Run history model (needed for B1) | mutable status documents, append-only events with status derived from them | Event-sourced: it is how Temporal works, and it suits MongoDB, Cassandra and Kafka alike, which keeps horizon 2 a port rather than a redesign |
 | Try Kafka as the step dispatch queue in B2 | yes as a side experiment, no | Open. Its limits with retries and delays are a useful lesson, but it is not the queue to keep |
@@ -325,3 +324,7 @@ Several of these come back in later horizons, noted on each item.
 | 2026-10-25 | A task registers by being listed as a provider in a Nest module (`TasksModule` for built-ins) | Nest only instantiates declared providers. The engine (`TaskRegistry`, runner, service) never changes; scanning the filesystem for task files would hide that wiring |
 | 2026-10-25 | A step's `task` name resolves to the latest registered version | Pinning a version in the definition belongs with stored, versioned definitions in A4 |
 | 2026-10-25 | Until A2, `TaskContext` carries the positional `input`; `signal` is never aborted and `attempt` is always 1 | Keeps A1 a behaviour-preserving port; B3 adds timeouts and retries |
+| 2026-10-25 | Expressions are JSONata inside `{{ }}`: a string that is one expression keeps the value's type, mixed text interpolates to a string | JSONata reshapes as well as queries. Whole-string expressions let a param carry an array or object, not just text |
+| 2026-10-25 | Static checks read the JSONata AST: a root path `steps.<id>` must name an upstream step (direct or indirect), `input.<name>` a declared input, and any other root name is rejected | Catches wiring mistakes and typos at submit time. Paths inside filters are relative to an item and are skipped; at run time a step's scope only holds upstream outputs anyway |
+| 2026-10-25 | Run input is declared as type names or JSON Schema and checked with Ajv, defaults filled in | Same schema language as task params, so A3 reuses the validator |
+| 2026-10-25 | `POST /workflow/run` takes `{ definition, input }` and returns `{ runId, steps: { <id>: { status, output } } }` | Separates a definition from one run's input, ahead of stored definitions in A4; the response mirrors the `steps.<id>.output` expression scope |

@@ -14,14 +14,14 @@ const names = (result: Repo[]) => result.map(repo => repo.name);
 
 describe('filterRepos', () => {
   it('defaults to a 1000 star minimum, inclusive', async () => {
-    expect(names(await filterRepos.execute(contextFor({}, repos)))).toEqual(['edge', 'many']);
+    expect(names(await filterRepos.execute(contextFor({ repos })))).toEqual(['edge', 'many']);
   });
 
   it('uses the given minimum', async () => {
-    expect(names(await filterRepos.execute(contextFor({ minStars: 5000 }, repos)))).toEqual(['many']);
+    expect(names(await filterRepos.execute(contextFor({ repos, minStars: 5000 })))).toEqual(['many']);
   });
 
   it('treats a minimum of 0 as "keep everything"', async () => {
-    expect(await filterRepos.execute(contextFor({ minStars: 0 }, repos))).toHaveLength(4);
+    expect(await filterRepos.execute(contextFor({ repos, minStars: 0 }))).toHaveLength(4);
   });
 });

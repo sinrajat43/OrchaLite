@@ -1,20 +1,24 @@
 import { Logger } from '@nestjs/common';
 import { randomUUID } from 'crypto';
+import { resolveTemplate } from '../expressions/template';
 import { TaskExecutionError, TaskLogger } from '../tasks/task.interface';
+import { formatSchemaErrors } from './schema-validator';
 import { TaskLookup } from './task-registry.service';
+import { CompiledStep, validateWorkflow, WorkflowDefinition } from './workflow-definition';
 
-export interface WorkflowStep {
-  id: string;
-  task: string;
-  params?: any;
-  dependsOn: string[];
+export interface StepResult {
+  status: 'succeeded';
+  output?: unknown;
 }
 
 export interface WorkflowResults {
-  [key: string]: any;
+  runId: string;
+  steps: Record<string, StepResult>;
 }
 
 export interface RunOptions {
+  /** Values for the definition's declared input */
+  input?: Record<string, unknown>;
   /** Defaults to a random UUID */
   runId?: string;
   /** Builds the logger handed to a step; defaults to a Nest Logger */
@@ -22,138 +26,83 @@ export interface RunOptions {
 }
 
 /**
- * Error thrown when a workflow definition is not a valid DAG
+ * Error thrown when run input does not match the definition's declared input
  */
-export class WorkflowDefinitionError extends Error {
+export class RunInputError extends Error {
   constructor(public readonly issues: string[]) {
-    super(`Invalid workflow definition: ${issues.join('; ')}`);
-    this.name = 'WorkflowDefinitionError';
-  }
-}
-
-/**
- * Checks that steps have unique ids, known dependencies and no cycles
- * @param steps - Array of workflow steps
- * @throws WorkflowDefinitionError if the steps do not form a valid DAG
- */
-export function validateWorkflow(steps: WorkflowStep[]): void {
-  const issues: string[] = [];
-  const ids = new Set<string>();
-
-  for (const step of steps) {
-    if (ids.has(step.id)) {
-      issues.push(`Duplicate step id "${step.id}"`);
-    }
-    ids.add(step.id);
-  }
-
-  for (const step of steps) {
-    for (const depId of step.dependsOn) {
-      if (!ids.has(depId)) {
-        issues.push(`Step "${step.id}" depends on unknown step "${depId}"`);
-      }
-    }
-  }
-
-  if (issues.length === 0) {
-    // Repeatedly resolve steps whose dependencies are resolved; leftovers are in a cycle
-    const resolved = new Set<string>();
-    let progressed = true;
-    while (progressed) {
-      progressed = false;
-      for (const step of steps) {
-        if (!resolved.has(step.id) && step.dependsOn.every(dep => resolved.has(dep))) {
-          resolved.add(step.id);
-          progressed = true;
-        }
-      }
-    }
-
-    const unresolved = steps.filter(s => !resolved.has(s.id)).map(s => s.id);
-    if (unresolved.length > 0) {
-      issues.push(`Circular dependency involving steps: ${unresolved.join(', ')}`);
-    }
-  }
-
-  if (issues.length > 0) {
-    throw new WorkflowDefinitionError(issues);
+    super(`Invalid run input: ${issues.join('; ')}`);
+    this.name = 'RunInputError';
   }
 }
 
 /**
  * Executes a workflow defined as a DAG of tasks
- * @param steps - Array of workflow steps
+ * @param definition - Workflow definition
  * @param tasks - Looks up the task each step names
- * @param options - Run id and logger factory
- * @returns Promise resolving to workflow results
- * @throws WorkflowDefinitionError if the steps do not form a valid DAG
- * @throws TaskExecutionError if workflow execution fails
+ * @param options - Run input, run id and logger factory
+ * @returns Promise resolving to every step's result
+ * @throws WorkflowDefinitionError if the definition is invalid
+ * @throws RunInputError if the input does not match the declared input
+ * @throws TaskExecutionError if a step fails
  */
 export async function runWorkflow(
-  steps: WorkflowStep[],
+  definition: WorkflowDefinition,
   tasks: TaskLookup,
   options: RunOptions = {}
 ): Promise<WorkflowResults> {
+  const compiled = validateWorkflow(definition, tasks);
   const runId = options.runId ?? randomUUID();
   const createLogger = options.createLogger ?? ((context: string) => new Logger(context));
-  const results: WorkflowResults = {};
-  const visited = new Set<string>();
-  const errors: TaskExecutionError[] = [];
 
-  validateWorkflow(steps);
+  // Validation fills in defaults, so work on a copy of the caller's input
+  const input = structuredClone(options.input ?? {});
+  if (!compiled.validateInput(input)) {
+    throw new RunInputError(formatSchemaErrors(compiled.validateInput.errors, 'input'));
+  }
+
+  const results: Record<string, StepResult> = {};
 
   console.log('Starting workflow execution...');
 
-  async function runStep(step: WorkflowStep) {
-    if (visited.has(step.id)) return;
-
+  async function runStep({ step, params: paramsTemplate, upstream }: CompiledStep) {
     try {
       console.log(`Starting task execution: ${step.task} (${step.id})`);
-      
+
       // TODO: Add timeout handling
       // const timeout = setTimeout(() => {
       //   throw new TaskExecutionError(step.id, step.task, 'Task execution timed out');
       // }, TASK_TIMEOUT_MS);
 
-      const inputs = step.dependsOn.map(depId => {
-        if (!visited.has(depId)) {
-          throw new TaskExecutionError(
-            step.id,
-            step.task,
-            `Dependency ${depId} not found in results`
-          );
-        }
-        return results[depId];
-      });
+      // Expressions see the run input and only the outputs of upstream steps
+      const scope = {
+        input,
+        steps: Object.fromEntries([...upstream].map(id => [id, { output: results[id].output }])),
+      };
 
-      const mergedInput = inputs.length === 1 ? inputs[0] : inputs;
-      const task = tasks.get(step.task);
-
-      if (!task) {
-        throw new TaskExecutionError(
-          step.id,
-          step.task,
-          `Task ${step.task} not found in registry`
-        );
+      let params: Record<string, unknown>;
+      try {
+        params = (await resolveTemplate(paramsTemplate, scope, 'params')) as Record<string, unknown>;
+      } catch (error) {
+        throw new TaskExecutionError(step.id, step.task, `Could not resolve params: ${(error as Error).message}`, error as Error);
       }
 
+      const task = tasks.get(step.task);
+
       // TODO: Add retry logic
-      // const result = await withRetry(() => task.execute(mergedInput, step.params), {
+      // const result = await withRetry(() => task.execute(...), {
       //   maxRetries: 3,
       //   backoff: 'exponential'
       // });
 
       // Nothing aborts the signal yet; timeouts and cancellation arrive in B3
-      const result = await task.execute({
-        params: step.params ?? {},
-        input: mergedInput,
+      const output = await task.execute({
+        params,
         signal: new AbortController().signal,
         attempt: 1,
         idempotencyKey: `${runId}:${step.id}`,
         logger: createLogger(`${step.task} run=${runId} step=${step.id}`),
       });
-      results[step.id] = result;
-      visited.add(step.id);
+      results[step.id] = { status: 'succeeded', output };
 
       console.log(`Completed task execution: ${step.task} (${step.id})`);
     } catch (error) {
@@ -165,62 +114,29 @@ export async function runWorkflow(
             `Task execution failed: ${(error as Error)?.message ?? error}`,
             error as Error
           );
-      
-      errors.push(taskError);
+
       console.error(`Task execution failed: ${step.task} (${step.id})`, taskError);
       throw taskError;
     }
   }
 
-  try {
-    const stepMap = Object.fromEntries(steps.map(s => [s.id, s]));
-    const queue = steps.filter(s => s.dependsOn.length === 0).map(s => s.id);
-    const queued = new Set<string>(queue);
+  // TODO: Add workflow execution status tracking
+  // const workflowStatus = {
+  //   id: runId,
+  //   status: 'RUNNING',
+  //   startTime: new Date(),
+  //   steps: steps.map(s => ({ id: s.id, status: 'PENDING' }))
+  // };
+  // await updateWorkflowStatus(workflowStatus);
 
-    // TODO: Add workflow execution status tracking
-    // const workflowStatus = {
-    //   id: generateWorkflowId(),
-    //   status: 'RUNNING',
-    //   startTime: new Date(),
-    //   steps: steps.map(s => ({ id: s.id, status: 'PENDING' }))
-    // };
-    // await updateWorkflowStatus(workflowStatus);
-
-    while (queue.length) {
-      const id = queue.shift();
-      if (!id) continue;
-      
-      const step = stepMap[id];
-      await runStep(step);
-
-      for (const s of steps) {
-        if (s.dependsOn.every(dep => visited.has(dep)) && !queued.has(s.id)) {
-          queue.push(s.id);
-          queued.add(s.id);
-        }
-      }
-    }
-
-    // TODO: Update workflow status to COMPLETED
-    // await updateWorkflowStatus({
-    //   ...workflowStatus,
-    //   status: 'COMPLETED',
-    //   endTime: new Date()
-    // });
-
-    console.log('Workflow execution completed successfully');
-    return results;
-  } catch (error) {
-    // TODO: Update workflow status to FAILED
-    // await updateWorkflowStatus({
-    //   ...workflowStatus,
-    //   status: 'FAILED',
-    //   endTime: new Date(),
-    //   error: error.message
-    // });
-
-    console.error('Workflow execution failed:', error);
-    throw error;
+  // Run steps one at a time, each once all of its dependencies have finished
+  const pending = [...compiled.steps];
+  while (pending.length) {
+    const index = pending.findIndex(({ step }) => step.dependsOn.every(dep => dep in results));
+    const [next] = pending.splice(index, 1);
+    await runStep(next);
   }
+
+  console.log('Workflow execution completed successfully');
+  return { runId, steps: results };
 }
-  

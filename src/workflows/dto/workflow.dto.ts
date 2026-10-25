@@ -1,4 +1,4 @@
-import { IsString, IsArray, IsOptional, ValidateNested, ArrayMinSize, IsNotEmpty } from 'class-validator';
+import { IsString, IsArray, IsOptional, ValidateNested, ArrayMinSize, IsNotEmpty, IsObject, IsDefined } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class WorkflowStepDto {
@@ -11,6 +11,7 @@ export class WorkflowStepDto {
   task: string;
 
   @IsOptional()
+  @IsObject()
   params?: Record<string, any>;
 
   @IsArray()
@@ -19,10 +20,14 @@ export class WorkflowStepDto {
   dependsOn: string[];
 }
 
-export class CreateWorkflowDto {
+export class WorkflowDefinitionDto {
   @IsString()
   @IsNotEmpty()
   name: string;
+
+  @IsOptional()
+  @IsObject()
+  input?: Record<string, any>;
 
   @IsArray()
   @ValidateNested({ each: true })
@@ -30,4 +35,14 @@ export class CreateWorkflowDto {
   @ArrayMinSize(1)
   steps: WorkflowStepDto[];
 }
-  
+
+export class RunWorkflowDto {
+  @IsDefined()
+  @ValidateNested()
+  @Type(() => WorkflowDefinitionDto)
+  definition: WorkflowDefinitionDto;
+
+  @IsOptional()
+  @IsObject()
+  input?: Record<string, unknown>;
+}

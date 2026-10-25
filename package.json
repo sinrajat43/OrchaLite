@@ -23,10 +23,12 @@
     "@sinclair/typebox": "^0.34.52",
     "@types/express": "^5.0.2",
     "@types/node": "^22.15.29",
+    "ajv": "^8.20.0",
     "axios": "^1.9.0",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.2",
     "dotenv": "^16.5.0",
+    "jsonata": "^2.2.2",
     "mongoose": "^8.15.1",
     "reflect-metadata": "^0.2.2",
     "typescript": "^5.8.3"

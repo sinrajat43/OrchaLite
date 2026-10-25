@@ -32,7 +32,7 @@ describe('storeRepos', () => {
   it('writes one timestamped document to the default collection', async () => {
     const create = jest.spyOn(RepoModel, 'create').mockResolvedValue(undefined as any);
 
-    await storeRepos.execute(contextFor({}, repos));
+    await storeRepos.execute(contextFor({ repos }));
 
     expect(create).toHaveBeenCalledWith({ timestamp: expect.any(Date), data: repos });
   });
@@ -41,7 +41,7 @@ describe('storeRepos', () => {
     const create = jest.spyOn(getRepoModel('other-repos'), 'create').mockResolvedValue(undefined as any);
     const defaultCreate = jest.spyOn(RepoModel, 'create').mockResolvedValue(undefined as any);
 
-    await storeRepos.execute(contextFor({ collectionName: 'other-repos' }, repos));
+    await storeRepos.execute(contextFor({ repos, collectionName: 'other-repos' }));
 
     expect(create).toHaveBeenCalledTimes(1);
     expect(defaultCreate).not.toHaveBeenCalled();
@@ -50,6 +50,6 @@ describe('storeRepos', () => {
   it('wraps database errors', async () => {
     jest.spyOn(RepoModel, 'create').mockRejectedValue(new Error('disk full'));
 
-    await expect(storeRepos.execute(contextFor({}, repos))).rejects.toThrow('Failed to store repos: disk full');
+    await expect(storeRepos.execute(contextFor({ repos }))).rejects.toThrow('Failed to store repos: disk full');
   });
 });

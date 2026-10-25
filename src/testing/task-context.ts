@@ -11,13 +11,9 @@ export const silentLogger: TaskLogger = {
 /**
  * Builds the context the engine would hand a task for a first attempt
  */
-export function contextFor<TParams, TInput = undefined>(
-  params: TParams,
-  input?: TInput
-): TaskContext<TParams, TInput> {
+export function contextFor<TParams>(params: TParams): TaskContext<TParams> {
   return {
     params,
-    input,
     signal: new AbortController().signal,
     attempt: 1,
     idempotencyKey: 'test-run:test-step',
