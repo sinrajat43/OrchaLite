@@ -5,7 +5,7 @@ when starting a stage, tick items off as they land, and record decisions in the
 log at the bottom. Diagrams of the current and target architecture are in
 [architecture.md](architecture.md).
 
-Last updated: 2026-10-04
+Last updated: 2026-10-25
 
 The doc works at two levels:
 
@@ -100,7 +100,8 @@ part by hand and understanding why those tools are designed the way they are.
 
 ## Where the project is today
 
-As of 2026-10-04:
+As of 2026-10-04, re-checked against the code on 2026-10-25 (no stage started
+yet; 34 Jest tests passing):
 
 - One endpoint, `POST /workflow/run`, takes a definition and runs it inside the
   HTTP request.
@@ -117,6 +118,19 @@ As of 2026-10-04:
 - A single-page UI (`public/index.html`) offers a JSON editor with examples, a
   live step graph with validation, and per-step results and errors.
 - Jest specs cover the task runner, the three tasks and the HTTP API.
+- The `Task` interface is the old `execute(input, params)` shape: no
+  `TaskContext`, decorator, discovery, schemas or versions yet (all A1).
+- There is no run-level input; `fetchRepos` reads `GITHUB_TOKEN` from the
+  environment (replaced by A2 input and A4 connections).
+- Unknown task names are rejected at submit time, before any step runs.
+- The first failing step aborts the run with a 500, and the outputs of steps
+  that already succeeded are dropped.
+- `runWorkflow` holds commented-out TODOs for timeouts, retries and run status
+  tracking, and an `errors` array that is never read. Delete them when B1 and
+  B3 land.
+- The definition DTO is validated with `class-validator`, twice: by the global
+  `ValidationPipe` and again in `WorkflowService`. This bears on the A1 schema
+  library decision.
 
 In short: a script runner with a DAG. It orders steps correctly but is neither
 general nor durable.
