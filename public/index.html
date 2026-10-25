@@ -608,9 +608,10 @@ function formatMs(ms) {
 function formatTime(iso) {
   const date = new Date(iso);
   const sameDay = date.toDateString() === new Date().toDateString();
+  // Show the viewer's time zone so times can be compared with server logs
   return sameDay
-    ? date.toLocaleTimeString()
-    : date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'medium' });
+    ? date.toLocaleTimeString(undefined, { timeZoneName: 'short' })
+    : date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'long' });
 }
 
 const badge = status => el('span', { className: `badge ${status}`, textContent: status });
