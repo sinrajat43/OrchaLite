@@ -2,7 +2,7 @@
 
 A lightweight workflow orchestration engine built with NestJS that allows you to define and execute workflows as Directed Acyclic Graphs (DAGs) of tasks.
 
-Where the project is heading: [objective and roadmap](docs/objective.md) · [architecture diagrams](docs/architecture.md)
+Where the project is heading: [objective and roadmap](docs/objective.md) · [architecture diagrams](docs/architecture.md) · [high-level design of the current system](docs/hld.md)
 
 ## Features
 
@@ -197,8 +197,24 @@ With the app running, open http://localhost:3000 for a single-page UI (`public/i
 - See the steps drawn as a dependency graph, with problems (unknown steps or tasks, cycles) flagged as you type, `forEach` and `when` steps marked, and skipped steps greyed out after a run
 - Browse the task catalogue with each task's params and output schemas
 - Run it and inspect each step's output, or the error and the step that failed
+- Browse past runs in the run history panel, filter them by status, and open one to see a timeline of its steps, its input, outputs and errors, which stored version ran, or load it back into the editor. `/#run=<id>` opens a run directly
 
-Results appear when the whole run has finished; there is no run history or live progress yet.
+Results appear when the whole run has finished; there is no live progress yet.
+
+### Canvas builder
+
+http://localhost:3000/builder.html is a drag-and-drop editor for the same
+definitions ([details](docs/builder.md)):
+
+- Workflows are plans: open any stored workflow or version, edit it, and save it
+  as the next version (`POST /workflows`). New plans, templates and uploads the
+  server rejects stay as drafts in the browser until they are saved
+- Drag tasks onto a canvas, connect steps by dragging between them, and edit
+  params in forms built from each task's schema, with `{{ }}` references to
+  insert, and `when` and `forEach` per step
+- Declare run inputs; the run form checks values before anything is sent, and
+  a stored, unchanged plan runs as its version so history records which one ran
+- Upload or download JSON, or start from one of the examples
 
 ## API Endpoints
 
@@ -249,6 +265,22 @@ Versions are immutable. A unique index on `(name, version)` settles concurrent
 saves: each reads the latest version and tries to claim the next, and a loser
 reads again.
 
+### Run history
+
+Every run the engine accepts is recorded in MongoDB as it happens: an
+append-only timeline in `run_events` and one summary per run in
+`workflow_runs`, rebuilt from the events. Runs whose definition or input is
+rejected are not recorded. Runs left `RUNNING` by a server that stopped are
+marked `ABANDONED` on the next start. See [the design](docs/run-history-design.md).
+
+| Endpoint | Does |
+| --- | --- |
+| `GET /runs?status=FAILED&name=...&limit=20&before=<runId>` | Run summaries, newest first; `before` pages to older runs |
+| `GET /runs/:id` | One run: status, input, the stored workflow version if any, and each step's status, timing, error or skip reason |
+| `GET /runs/:id/events` | The full timeline, including step outputs (over 256 KB, a preview is stored) |
+
+The run id in a run's response (and in a failed step's `500`) is the id to use here.
+
 ### Connections and inbox
 
 | Endpoint | Does |
@@ -268,6 +300,12 @@ src/
 ├── definitions/            # /workflows: versioned definition store
 ├── connections/            # /connections: SecretBox (AES-256-GCM), service
 ├── inbox/                  # /inbox: local webhook target
+├── runs/                   # /runs: run history as events plus a summary per run
+│   ├── run-recorder.ts           # Turns runner hooks into events; closes abandoned runs
+│   ├── run-projection.ts         # Pure fold of events into a summary
+│   ├── run-store.ts              # RunStore port
+│   ├── mongo-run-store.ts        # run_events, workflow_runs
+│   └── in-memory-run-store.ts    # For tests
 ├── workflows/              # HTTP API
 │   ├── workflow.controller.ts    # POST /workflow/run
 │   ├── tasks.controller.ts       # GET /tasks
@@ -331,12 +369,13 @@ the params as written.
 
 - `400 Invalid workflow definition` lists every problem with a definition at once
 - `400 Invalid run input` lists every problem with the input
-- `500` names the step that failed (`stepId`, `task`) and why
+- `500` names the step that failed (`stepId`, `task`), why, and the `runId` to look up in `/runs`
 
 ## What comes next
 
-Runs still happen inside the HTTP request and are lost on a crash. Phase B of
-the [roadmap](docs/objective.md) makes them durable: persisted runs, a
+Runs still happen inside the HTTP request. They are recorded as they go, but a
+run interrupted by a crash is only marked `ABANDONED`, not resumed. Phase B of
+the [roadmap](docs/objective.md) makes them durable: asynchronous runs, a
 scheduler and workers with leases, retries and timeouts, parallelism, sagas,
 triggers, and observability.
 

@@ -51,7 +51,7 @@ export class DefinitionsController {
     @Body() { input, version }: RunStoredWorkflowDto
   ): Promise<WorkflowResults & { workflow: { name: string; version: number } }> {
     const stored = await this.find(name, version);
-    const results = await this.workflows.run(stored.definition, input);
+    const results = await this.workflows.run(stored.definition, input, { name, version: stored.version });
     return { workflow: { name, version: stored.version }, ...results };
   }
 

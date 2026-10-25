@@ -1,188 +1,179 @@
 # OrchaLite high-level design (current state)
 
-What the code on `main` does today. For the target design and roadmap, see
-[architecture.md](architecture.md) (diagrams 3 and 4) and [objective.md](objective.md).
+What the code on `main` does as of 2026-10-25: phase A (generality) done, run
+history recorded, and a canvas builder. For where it is heading, see
+[objective.md](objective.md) and the target diagrams in
+[architecture.md](architecture.md).
 
 ## 1. System context
 
 ```mermaid
 flowchart LR
-    User([User / API client])
-    Browser["Web UI<br/>public/index.html<br/>(no build step)"]
+    User([User])
+    Classic["Classic UI<br/>/ (index.html)<br/>JSON editor, run history"]
+    Builder["Canvas builder<br/>/builder.html<br/>plans, drag and drop"]
+    Scripts([API clients, curl])
 
-    subgraph App["OrchaLite (single NestJS process, port 3000)"]
-        API["HTTP API<br/>/workflow/*"]
-        Engine["Workflow engine<br/>validate DAG + run steps"]
-        Tasks["Task registry<br/>fetchRepos · filterRepos · storeRepos"]
+    subgraph App["OrchaLite: one NestJS process"]
+        API["HTTP API"]
+        Engine["Workflow engine<br/>validate, then run in the request"]
+        Tasks["Task catalogue<br/>@TaskHandler plugins"]
+        History["Run recorder"]
     end
 
-    GitHub[(GitHub Search API)]
     Mongo[(MongoDB)]
+    Ext[(External HTTP APIs)]
+    Hooks[(Webhook targets,<br/>or the local /inbox)]
 
-    User -->|opens http://localhost:3000| Browser
-    Browser -->|GET /workflow/tasks<br/>POST /workflow/run| API
-    User -->|curl / scripts| API
+    User --> Classic & Builder
+    Classic & Builder & Scripts --> API
     API --> Engine --> Tasks
-    Tasks -->|"search/repositories?q=org:X<br/>(optional GITHUB_TOKEN)"| GitHub
-    Tasks -->|insert one document per run| Mongo
+    Engine -->|hooks| History --> Mongo
+    API --> Mongo
+    Tasks -->|http.request| Ext
+    Tasks -->|notify.webhook| Hooks
+    Tasks -->|mongo.*| Mongo
 ```
 
-## 2. Components
+## 2. Modules
 
 ```mermaid
 flowchart TB
     subgraph Boot["Bootstrap"]
-        Main["main.ts<br/>dotenv, enableShutdownHooks, listen(PORT)"]
-        Setup["app.setup.ts · configureApp<br/>static assets from /public<br/>global ValidationPipe (whitelist, forbidNonWhitelisted)"]
-        AppMod["AppModule<br/>mongoose.connect on init<br/>mongoose.disconnect on shutdown"]
+        Main["main.ts<br/>listen(PORT), shutdown hooks"]
+        Setup["app.setup.ts<br/>static /public, global ValidationPipe"]
+        AppMod["AppModule<br/>mongoose.connect"]
     end
 
-    subgraph WF["WorkflowModule"]
-        Ctl["WorkflowController<br/>GET /workflow/tasks<br/>POST /workflow/run"]
-        DTO["CreateWorkflowDto<br/>name, steps[id, task, params, dependsOn]"]
-        Svc["WorkflowService<br/>check task names exist<br/>map errors to 400 / 500"]
+    subgraph Api["ApiModule"]
+        Runs["RunsModule (global)<br/>RunsController /runs<br/>RunRecorder, RunStore port"]
+        Wf["WorkflowModule<br/>WorkflowController /workflow/run<br/>TasksController /tasks<br/>WorkflowService"]
+        Defs["DefinitionsModule<br/>DefinitionsController /workflows<br/>DefinitionStore"]
+        Conns["ConnectionsModule<br/>/connections<br/>SecretBox AES-256-GCM"]
+        Inbox["InboxModule<br/>/inbox (memory)"]
     end
 
-    subgraph Orch["orchestrator/task-runner.util.ts"]
-        Validate["validateWorkflow<br/>unique ids, known deps, no cycles"]
-        Run["runWorkflow<br/>queue-based topological run,<br/>one step at a time"]
-        Results[("results map<br/>in memory")]
+    subgraph Engine["Engine"]
+        Orch["OrchestratorModule<br/>TaskRegistry via DiscoveryService"]
+        Def["workflow-definition.ts<br/>validate and compile"]
+        Runner["task-runner.util.ts<br/>runWorkflow, RunHooks"]
+        Expr["expressions/template.ts<br/>{{ }} JSONata, reference checks"]
+        Schema["schema-validator.ts<br/>Ajv"]
     end
 
-    subgraph TaskLayer["tasks/ (plain objects implementing Task)"]
-        Iface["Task interface<br/>execute(input, params)<br/>TaskExecutionError"]
-        Reg["taskRegistry"]
-        Fetch["fetchRepos"]
-        Filter["filterRepos"]
-        Store["storeRepos"]
-        Schema["repo.schema.ts<br/>getRepoModel(collectionName)"]
-    end
+    TasksM["TasksModule<br/>http.request, transform, filter,<br/>mongo.insert, mongo.findOne, mongo.upsert,<br/>notify.webhook, delay"]
 
     Main --> Setup
-    Main --> AppMod --> WF
-    Ctl -->|validated DTO| Svc
-    DTO -.-> Ctl
-    Svc --> Reg
-    Svc --> Run
-    Run --> Validate
-    Run <--> Results
-    Run -->|lookup by name| Reg
-    Reg --> Fetch & Filter & Store
-    Fetch & Filter & Store -.implements.-> Iface
-    Store --> Schema
-    Schema -->|default mongoose connection| Mongo[(MongoDB)]
-    AppMod -->|opens the same connection| Mongo
-    Fetch --> GH[(GitHub API)]
+    Main --> AppMod --> Api
+    Wf --> Runner
+    Wf -->|prepare per run| Runs
+    Defs -->|run a stored version| Wf
+    Runner --> Def --> Expr & Schema
+    Runner --> Orch
+    Orch -.->|discovers @TaskHandler| TasksM
+    Runner -->|ctx.connections| Conns
 ```
 
-## 3. Request flow: `POST /workflow/run`
-
-The whole run happens inside the HTTP request; the client waits for every step.
+## 3. Running a workflow
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant C as Client / Web UI
-    participant VP as ValidationPipe
-    participant Ctl as WorkflowController
+    participant UI as Client / UI
+    participant API as WorkflowController or DefinitionsController
     participant Svc as WorkflowService
+    participant Rec as RunHandle
     participant Run as runWorkflow
-    participant Reg as taskRegistry
-    participant Ext as GitHub / MongoDB
+    participant T as Task
+    participant DB as MongoDB
 
-    C->>VP: POST /workflow/run {name, steps}
-    alt DTO invalid or unknown properties
-        VP-->>C: 400
+    alt ad hoc (classic editor, builder draft)
+        UI->>API: POST /workflow/run { definition, input }
+    else stored (saved workflow, builder plan)
+        UI->>API: POST /workflows/:name/runs { input, version? }
+        API->>DB: load that version
     end
-    VP->>Ctl: CreateWorkflowDto
-    Ctl->>Svc: run(dto)
-    Svc->>Svc: every step.task in registry?
-    alt missing tasks
-        Svc-->>C: 400 "Invalid tasks in workflow"
+    API->>Svc: run(definition, input, workflow?)
+    Svc->>Rec: prepare: run id and hooks
+    Svc->>Run: runWorkflow(definition, tasks, { input, connections, runId, hooks })
+    Run->>Run: validate graph, tasks, expressions, input, params schemas
+    alt rejected
+        Run-->>UI: 400 with every problem (nothing recorded)
     end
-    Svc->>Run: runWorkflow(steps, taskRegistry)
-    Run->>Run: validateWorkflow (dupes, unknown deps, cycles)
-    alt not a DAG
-        Run-->>Svc: WorkflowDefinitionError
-        Svc-->>C: 400 "Invalid workflow definition"
+    Run->>Rec: onRunStarted
+    Rec->>DB: RunStarted
+    loop each step in dependency order
+        Run->>Run: skip (when false, skipped dependency) or resolve params, per forEach item
+        Run->>T: execute(ctx)
+        T-->>Run: output
+        Run->>Rec: onStepStarted, onStepFinished or onStepFailed
+        Rec->>DB: step events, summary
     end
-
-    loop queue of ready steps (deps all done), sequential
-        Run->>Run: inputs = results[dep] for each dependsOn<br/>(single dep → value, many → array)
-        Run->>Reg: taskRegistry[step.task]
-        Run->>Ext: task.execute(input, params)
-        Ext-->>Run: output
-        Run->>Run: results[step.id] = output
-    end
-
-    alt a task throws
-        Run-->>Svc: TaskExecutionError(stepId, task)
-        Svc-->>C: 500 {message, stepId, task}
-    else all steps succeed
-        Run-->>Svc: results
-        Svc-->>C: 201 {stepId: output, ...}
-    end
+    Svc->>Rec: succeed or fail
+    Rec->>DB: RunSucceeded or RunFailed
+    Svc-->>UI: 201 { runId, steps } or 500 { stepId, task, runId }
 ```
 
-## 4. Data model
+## 4. Data
+
+| Collection | Owner | Holds |
+| --- | --- | --- |
+| `workflow_definitions` | DefinitionStore | Immutable versions per name; unique `(name, version)` |
+| `connections` | ConnectionsService | Base URL and secrets encrypted with `ORCHALITE_SECRET_KEY` |
+| `run_events` | MongoRunStore | Append-only run timeline; unique `(runId, seq)` |
+| `workflow_runs` | MongoRunStore | One summary per run, rebuilt from its events |
+| any (task-chosen) | `mongo.insert`, `mongo.upsert` | Workflow data, such as stored repos or a release watcher's last version |
+
+In the browser (builder only): drafts and per-workflow layout in
+`localStorage`.
 
 ```mermaid
-classDiagram
-    class CreateWorkflowDto {
-        +string name
-        +WorkflowStepDto[] steps
+erDiagram
+    workflow_definitions ||--o{ workflow_runs : "stored runs reference name + version"
+    workflow_runs ||--o{ run_events : "timeline"
+    workflow_definitions {
+        string name
+        int version
+        string source "definition JSON as submitted"
+        string hash
+        date createdAt
     }
-    class WorkflowStepDto {
-        +string id
-        +string task
-        +Record params?
-        +string[] dependsOn
+    workflow_runs {
+        string _id "run id"
+        string status
+        object workflow "name, version"
+        object input
+        array steps "status, timing, error, reason"
+        int lastSeq
     }
-    class Task {
-        <<interface>>
-        +execute(input, params) Promise~TOutput~
+    run_events {
+        string runId
+        int seq
+        string type
+        object data
     }
-    class TaskExecutionError {
-        +string taskId
-        +string taskName
-        +Error cause?
+    connections {
+        string name
+        string baseUrl
+        string secrets "encrypted"
     }
-    class WorkflowDefinitionError {
-        +string[] issues
-    }
-    class Repo {
-        +number id
-        +string name
-        +number stargazers_count
-    }
-    class RepoDocument {
-        <<MongoDB>>
-        +Date timestamp
-        +Array data
-    }
-
-    CreateWorkflowDto "1" *-- "1..*" WorkflowStepDto
-    WorkflowStepDto ..> Task : task name → registry
-    Task ..> TaskExecutionError : throws
-    RepoDocument o-- Repo : data[]
 ```
 
-## 5. Built-in task pipeline (example workflow)
+## 5. Front ends
 
-```mermaid
-flowchart LR
-    F["fetch<br/>fetchRepos<br/>org, perPage, page"]
-    Fi["filter<br/>filterRepos<br/>minStars"]
-    S["store<br/>storeRepos<br/>collectionName"]
-    F -->|"Repo[] sorted by stars"| Fi -->|"Repo[] with ≥ minStars"| S -->|void| Done([run result])
-```
+| Page | For | Talks to |
+| --- | --- | --- |
+| `/` classic UI | JSON editing with live graph, stored workflows, connections, inbox, **run history** with step timeline, `/#run=<id>` links | `/tasks`, `/workflow/run`, `/workflows`, `/connections`, `/inbox`, `/runs` |
+| `/builder.html` | **Plans**: canvas, schema-driven param forms, run inputs and a checked run form, versions, drafts, upload and download | `/tasks`, `/examples.json`, `/workflows`, `/workflow/run`, `/runs` |
 
-## Known limits today
+Both are single static files with no build step. See [builder.md](builder.md).
 
-| Area | Limit |
-| --- | --- |
-| Durability | Run state is the in-memory `results` map; a crash or client timeout loses the run. No run history. |
-| Execution | Steps run sequentially even when independent; no parallelism. |
-| Failure handling | No retries, no timeouts; first failure aborts the run. |
-| Tasks | Plain objects outside Nest DI; registry is a static import. |
-| Storage | `storeRepos` writes the whole array into one document (16MB cap). |
+## 6. Known limits
+
+| Area | Limit | Roadmap |
+| --- | --- | --- |
+| Durability | Runs execute inside the request; a crash ends a run, which is then marked `ABANDONED`, not resumed | B1, B2 |
+| Execution | One step and one `forEach` item at a time | B4 |
+| Failure handling | No retries or timeouts; the first failure aborts the run | B3 |
+| Stored workflows | Versions cannot be deleted | Not planned yet |
+| Builder | Drafts and layout are per browser; no undo or zoom | Horizon 4 for the full editor |

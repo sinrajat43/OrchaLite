@@ -4,7 +4,7 @@ import { isTruthy, resolveTemplate, Template } from '../expressions/template';
 import { ConnectionLookup, TaskExecutionError, TaskLogger } from '../tasks/task.interface';
 import { formatSchemaErrors, validatorFor } from './schema-validator';
 import { TaskLookup } from './task-registry.service';
-import { CompiledStep, validateWorkflow, WorkflowDefinition } from './workflow-definition';
+import { CompiledStep, validateWorkflow, WorkflowDefinition, WorkflowStep } from './workflow-definition';
 
 /** forEach runs items one after another inside the request, so keep fan-out bounded until B4 */
 export const MAX_FOR_EACH_ITEMS = 1000;
@@ -23,6 +23,19 @@ export interface WorkflowResults {
   steps: Record<string, StepResult>;
 }
 
+/**
+ * Optional callbacks for observing a run, e.g. to record its history.
+ * They are awaited in order, so they must handle their own errors.
+ */
+export interface RunHooks {
+  /** After the definition and input pass their checks, before any step; input has defaults filled in */
+  onRunStarted?(input: Record<string, unknown>): Promise<void>;
+  onStepStarted?(step: WorkflowStep): Promise<void>;
+  /** The step succeeded or was skipped */
+  onStepFinished?(step: WorkflowStep, result: StepResult): Promise<void>;
+  onStepFailed?(step: WorkflowStep, error: TaskExecutionError): Promise<void>;
+}
+
 export interface RunOptions {
   /** Values for the definition's declared input */
   input?: Record<string, unknown>;
@@ -32,6 +45,8 @@ export interface RunOptions {
   runId?: string;
   /** Builds the logger handed to a step; defaults to a Nest Logger */
   createLogger?: (context: string) => TaskLogger;
+  /** Called as the run and each step progress */
+  hooks?: RunHooks;
 }
 
 /**
@@ -69,6 +84,7 @@ export async function runWorkflow(
   const runId = options.runId ?? randomUUID();
   const createLogger = options.createLogger ?? ((context: string) => new Logger(context));
   const connections = options.connections ?? noConnections;
+  const hooks = options.hooks ?? {};
 
   // Validation fills in defaults, so work on a copy of the caller's input
   const input = structuredClone(options.input ?? {});
@@ -78,6 +94,7 @@ export async function runWorkflow(
 
   const results: Record<string, StepResult> = {};
 
+  await hooks.onRunStarted?.(input);
   console.log('Starting workflow execution...');
 
   async function runStep({ step, params: paramsTemplate, when, forEach, upstream }: CompiledStep): Promise<StepResult> {
@@ -166,13 +183,19 @@ export async function runWorkflow(
     const { step } = next;
 
     console.log(`Starting task execution: ${step.task} (${step.id})`);
+    await hooks.onStepStarted?.(step);
     try {
       results[step.id] = await runStep(next);
     } catch (error) {
       console.error(`Task execution failed: ${step.task} (${step.id})`, error);
+      await hooks.onStepFailed?.(
+        step,
+        error instanceof TaskExecutionError ? error : new TaskExecutionError(step.id, step.task, String((error as Error)?.message ?? error), error as Error)
+      );
       throw error;
     }
     console.log(`Finished task execution: ${step.task} (${step.id}): ${results[step.id].status}`);
+    await hooks.onStepFinished?.(step, results[step.id]);
   }
 
   console.log('Workflow execution completed successfully');

@@ -53,6 +53,27 @@ describe('stored workflow definitions', () => {
     expect((await api.request('POST', '/workflows/double/runs', { input: { n: 'x' } })).body.message).toBe('Invalid run input');
   });
 
+  it('records stored runs in MongoDB with the workflow version they ran', async () => {
+    const { body } = await api.request('POST', '/workflows/double/runs', { input: { n: 4 }, version: 1 });
+
+    const run = await api.request('GET', `/runs/${body.runId}`);
+    expect(run.body).toMatchObject({
+      id: body.runId,
+      name: 'double',
+      status: 'SUCCEEDED',
+      workflow: { name: 'double', version: 1 },
+      input: { n: 4 },
+      steps: [{ id: 'calc', status: 'SUCCEEDED' }],
+    });
+    const events = await api.request('GET', `/runs/${body.runId}/events`);
+    expect(events.body.find((e: { type: string }) => e.type === 'StepSucceeded').data.output).toBe(8);
+
+    const list = await api.request('GET', '/runs?name=double&limit=50');
+    // Three accepted runs so far (latest, pinned, this one); the rejected input made none
+    expect(list.body).toHaveLength(3);
+    expect(list.body[0].id).toBe(body.runId);
+  });
+
   it('refuses to store an invalid definition', async () => {
     const bad = { name: 'bad', steps: [{ id: 'a', task: 'nope', dependsOn: [] }] };
 

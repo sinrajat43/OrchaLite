@@ -167,6 +167,11 @@
   .node.invalid { border-color: var(--bad); border-style: dashed; }
   .node.ok { border-color: var(--ok); background: var(--ok-bg); }
   .node.failed { border-color: var(--bad); background: var(--bad-bg); }
+  .node.skipped { border-style: dashed; opacity: 0.65; }
+  .node .ctl { position: absolute; top: 6px; right: 10px; font: 600 10px var(--mono); color: var(--accent); }
+  .chip.status-SUCCEEDED { background: var(--ok-bg); color: var(--ok); border-color: transparent; }
+  .chip.status-FAILED { background: var(--bad-bg); color: var(--bad); border-color: transparent; }
+  a.item:hover { border-color: var(--muted) !important; }
   .node .id { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .node .task { color: var(--muted); font: 12px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .port {
@@ -269,9 +274,9 @@
   <span id="planTitle"></span>
   <span id="dirty"></span>
   <span class="grow"></span>
-  <button id="save" class="primary" type="button" title="Ctrl/Cmd + S">Save</button>
+  <button id="save" class="primary" type="button" title="Ctrl/Cmd + S">Save to server</button>
   <button id="download" type="button">Download JSON</button>
-  <a href="/">Classic editor</a>
+  <a href="/">Classic editor and run history</a>
 </header>
 
 <main>
@@ -282,7 +287,7 @@
       <button id="upload" type="button">Upload JSON</button>
       <input id="fileInput" type="file" accept=".json,application/json" multiple hidden>
     </div>
-    <p class="hint">Or drop .json files anywhere on the page. Plans are saved in this browser.</p>
+    <p class="hint">Or drop .json files anywhere on the page. Saved plans are stored on the server as versions; drafts stay in this browser.</p>
     <div class="list" id="plans"></div>
 
     <h2>Start from a template</h2>
@@ -328,32 +333,88 @@
 
 <script>
 // ===========================================================================
-// Storage. Plans live in localStorage behind this small interface, so it can
-// be swapped for the server's /workflows API once that exists.
+// Storage. Saved workflows live on the server as immutable versions
+// (/workflows). This browser keeps drafts not yet accepted by the server, and
+// per-workflow editor state: node positions, description, last run input.
 // ===========================================================================
 
-const LocalPlanStore = {
-  KEY: 'orchalite.plans.v1',
-  readAll() {
-    try { return JSON.parse(localStorage.getItem(this.KEY)) ?? []; } catch { return []; }
+const local = {
+  read(key, fallback) {
+    try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; }
   },
-  writeAll(plans) {
-    try { localStorage.setItem(this.KEY, JSON.stringify(plans)); return true; } catch { return false; }
+  write(key, value) {
+    try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch { return false; }
   },
-  list() { return this.readAll().sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)); },
-  get(id) { return this.readAll().find(p => p.id === id) ?? null; },
-  save(plan) {
-    const plans = this.readAll().filter(p => p.id !== plan.id);
-    plans.push(plan);
-    return this.writeAll(plans);
-  },
-  remove(id) { return this.writeAll(this.readAll().filter(p => p.id !== id)); },
 };
-const store = LocalPlanStore;
+
+const drafts = {
+  KEY: 'orchalite.builder.drafts.v1',
+  list() { return Object.values(local.read(this.KEY, {})).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)); },
+  get(key) { return local.read(this.KEY, {})[key] ?? null; },
+  save(plan) {
+    const all = local.read(this.KEY, {});
+    all[plan.key] = plan;
+    return local.write(this.KEY, all);
+  },
+  remove(key) {
+    const all = local.read(this.KEY, {});
+    delete all[key];
+    local.write(this.KEY, all);
+  },
+};
+
+const editorMeta = {
+  KEY: 'orchalite.builder.meta.v1',
+  get(name) { return local.read(this.KEY, {})[name] ?? {}; },
+  save(name, value) {
+    const all = local.read(this.KEY, {});
+    all[name] = { ...all[name], ...value };
+    local.write(this.KEY, all);
+  },
+};
 
 const prefs = {
   get(key) { try { return localStorage.getItem(`orchalite.builder.${key}`); } catch { return null; } },
   set(key, value) { try { localStorage.setItem(`orchalite.builder.${key}`, value); } catch { /* optional */ } },
+};
+
+async function api(method, path, body) {
+  try {
+    const response = await fetch(path, {
+      method,
+      headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const text = await response.text();
+    let data;
+    try { data = text ? JSON.parse(text) : undefined; } catch { data = { message: text }; }
+    return { ok: response.ok, status: response.status, body: data };
+  } catch (error) {
+    return { ok: false, status: 0, body: { message: `Could not reach the server: ${error.message}` } };
+  }
+}
+
+const errorsOf = body => [].concat(body?.errors ?? body?.message ?? 'Request failed')
+  .map(e => (typeof e === 'string' ? e : `${e.property}: ${Object.values(e.constraints ?? {}).join(', ')}`));
+const enc = encodeURIComponent;
+
+const server = {
+  workflows: [], // [{ name, latestVersion, versions, updatedAt }]
+  async refresh() {
+    const r = await api('GET', '/workflows');
+    this.workflows = r.ok ? r.body : [];
+    return this.workflows;
+  },
+  async open(name, version) {
+    const r = await api('GET', version ? `/workflows/${enc(name)}/versions/${version}` : `/workflows/${enc(name)}`);
+    return r.ok ? r.body : null;
+  },
+  async versions(name) {
+    const r = await api('GET', `/workflows/${enc(name)}/versions`);
+    return r.ok ? r.body : [];
+  },
+  save(definition) { return api('POST', '/workflows', definition); },
+  latestOf(name) { return this.workflows.find(w => w.name === name)?.latestVersion ?? 0; },
 };
 
 // ===========================================================================
@@ -373,6 +434,7 @@ const state = {
   selection: null,    // { kind: 'step', id } | { kind: 'edge', from, to } | null
   stepResults: {},    // step id -> 'ok' | 'failed', from the last run
   rightTab: 'inspect',
+  serverIssues: [],   // problems the server reported on the last save, until the next edit
   lastField: null,    // last focused param field, for inserting references
 };
 
@@ -417,9 +479,11 @@ function blankDefinition() {
   return { name: 'untitled-workflow', input: {}, steps: [] };
 }
 
-function makePlan(definition, extra = {}) {
+/** A plan not yet on the server, kept in this browser */
+function makeDraft(definition, extra = {}) {
   return {
-    id: newId(),
+    key: `draft:${newId()}`,
+    stored: false,
     definition: normalizeDefinition(definition),
     layout: {},
     description: '',
@@ -432,7 +496,7 @@ function makePlan(definition, extra = {}) {
 
 /** Keeps only what the server accepts, with defaults for missing parts */
 function normalizeDefinition(raw) {
-  const def = {
+  return {
     name: typeof raw?.name === 'string' && raw.name ? raw.name : 'untitled-workflow',
     input: raw?.input && typeof raw.input === 'object' && !Array.isArray(raw.input) ? clone(raw.input) : {},
     steps: Array.isArray(raw?.steps) ? raw.steps.map(step => ({
@@ -440,9 +504,10 @@ function normalizeDefinition(raw) {
       task: String(step?.task ?? ''),
       ...(step?.params && typeof step.params === 'object' ? { params: clone(step.params) } : {}),
       dependsOn: Array.isArray(step?.dependsOn) ? step.dependsOn.map(String) : [],
+      ...(typeof step?.when === 'string' && step.when ? { when: step.when } : {}),
+      ...(typeof step?.forEach === 'string' && step.forEach ? { forEach: step.forEach } : {}),
     })) : [],
   };
-  return def;
 }
 
 /** The definition as sent to the server: empty input and params left out */
@@ -450,11 +515,13 @@ function exportDefinition() {
   const { name, input, steps } = state.plan.definition;
   const out = { name };
   if (Object.keys(input).length) out.input = clone(input);
-  out.steps = steps.map(({ id, task, params, dependsOn }) => ({
+  out.steps = steps.map(({ id, task, params, dependsOn, when, forEach }) => ({
     id,
     task,
     ...(params && Object.keys(params).length ? { params: clone(params) } : {}),
     dependsOn: [...dependsOn],
+    ...(when ? { when } : {}),
+    ...(forEach ? { forEach } : {}),
   }));
   return out;
 }
@@ -463,79 +530,154 @@ function openPlan(plan) {
   state.plan = plan;
   state.selection = null;
   state.stepResults = {};
+  state.serverIssues = [];
   state.dirty = false;
   if (steps().some(s => !plan.layout[s.id])) autoLayout(false);
-  prefs.set('lastPlan', plan.id);
+  prefs.set('lastPlan', plan.key);
   renderAll();
+}
+
+async function openStored(name, version) {
+  const stored = await server.open(name, version);
+  if (!stored) {
+    toast(version ? `Could not load "${name}" version ${version}` : `Could not load "${name}"`);
+    return;
+  }
+  const meta = editorMeta.get(name);
+  openPlan({
+    key: `wf:${name}`,
+    stored: true,
+    definition: normalizeDefinition(stored.definition),
+    layout: clone(meta.layout ?? {}),
+    description: meta.description ?? '',
+    version: stored.version,
+    updatedAt: stored.createdAt,
+    lastInput: clone(meta.lastInput ?? {}),
+  });
 }
 
 function confirmDiscard() {
   return !state.dirty || confirm('This plan has unsaved changes. Discard them?');
 }
 
+let draftTimer;
 function markDirty() {
   state.dirty = true;
+  if (state.serverIssues.length) {
+    state.serverIssues = [];
+    renderIssues();
+  }
+  // Drafts exist only in this browser, so keep them saved as they change
+  if (!state.plan.stored) {
+    clearTimeout(draftTimer);
+    draftTimer = setTimeout(() => {
+      state.plan.updatedAt = new Date().toISOString();
+      drafts.save(clone(state.plan));
+      renderPlans();
+    }, 300);
+  }
   renderHeader();
 }
 
-function savePlan() {
-  const plan = state.plan;
-  plan.version += 1;
-  plan.updatedAt = new Date().toISOString();
-  if (!store.save(clone(plan))) {
-    toast('Could not save: browser storage is unavailable or full');
-    plan.version -= 1;
+/** Saves editor-only state for a stored workflow, without making a new version */
+function saveEditorMeta() {
+  if (state.plan.stored) {
+    editorMeta.save(state.plan.definition.name, {
+      layout: state.plan.layout,
+      description: state.plan.description,
+      lastInput: state.plan.lastInput,
+    });
+  }
+}
+
+/** Stores the plan on the server as the next version of its name */
+async function savePlan() {
+  const definition = exportDefinition();
+  $('save').disabled = true;
+  const r = await server.save(definition);
+  $('save').disabled = false;
+  if (!r.ok) {
+    state.serverIssues = errorsOf(r.body);
+    renderIssues();
+    toast(r.status === 400 ? 'Not saved: the server found problems (listed below the canvas)' : `Not saved: ${state.serverIssues[0]}`);
     return;
   }
+  if (!state.plan.stored) drafts.remove(state.plan.key);
+  Object.assign(state.plan, { key: `wf:${definition.name}`, stored: true, version: r.body.version, updatedAt: new Date().toISOString() });
+  saveEditorMeta();
+  prefs.set('lastPlan', state.plan.key);
   state.dirty = false;
+  await server.refresh();
   renderHeader();
   renderPlans();
-  toast(`Saved "${plan.definition.name}" (version ${plan.version})`);
+  if (state.rightTab === 'inspect' && !state.selection) renderInspector();
+  toast(r.body.created
+    ? `Saved "${definition.name}" as version ${r.body.version}`
+    : `No changes: "${definition.name}" is already version ${r.body.version}`);
 }
 
 function uniqueName(base) {
-  const names = new Set(store.list().map(p => p.definition.name));
+  const names = new Set([...server.workflows.map(w => w.name), ...drafts.list().map(d => d.definition.name)]);
   if (!names.has(base)) return base;
   let n = 2;
   while (names.has(`${base}-${n}`)) n++;
   return `${base}-${n}`;
 }
 
-/** Accepts a bare definition, an { workflow, input } template, or an array of either */
-function importJson(text, fileName = 'upload') {
+/**
+ * Accepts a bare definition, an { workflow, input } template, or an array of
+ * either. Each one is stored on the server; ones it rejects become drafts.
+ */
+async function importJson(text, fileName = 'upload') {
   let data;
   try {
     data = JSON.parse(text);
   } catch (error) {
     toast(`${fileName}: not valid JSON (${error.message})`);
-    return 0;
+    return;
   }
-  const items = Array.isArray(data) ? data : [data];
-  let imported = 0, last = null;
-  for (const item of items) {
-    const definition = item?.workflow ?? item?.definition ?? item;
-    if (!definition || !Array.isArray(definition.steps)) continue;
-    const plan = makePlan(definition, { lastInput: item?.input ?? {}, description: item?.label ?? '' });
-    state.plan = plan;
-    autoLayout(false);
-    plan.version = 1;
-    store.save(clone(plan));
-    imported++;
-    last = plan;
-  }
-  if (!imported) {
+  const items = (Array.isArray(data) ? data : [data])
+    .map(item => ({ definition: item?.workflow ?? item?.definition ?? item, input: item?.input ?? {}, label: item?.label ?? '' }))
+    .filter(item => item.definition && Array.isArray(item.definition.steps));
+  if (!items.length) {
     toast(`${fileName}: no workflow found (expected an object with a "steps" array)`);
-    if (last === null && state.plan && !store.get(state.plan.id) && !state.dirty) { /* keep current */ }
-    return 0;
+    return;
   }
-  openPlan(last);
-  toast(`Imported ${imported} plan${imported === 1 ? '' : 's'} from ${fileName}`);
-  return imported;
+
+  let stored = 0, last = null, rejected = null;
+  for (const item of items) {
+    const definition = normalizeDefinition(item.definition);
+    const r = await server.save(definition);
+    if (r.ok) {
+      stored++;
+      editorMeta.save(definition.name, { lastInput: item.input, description: item.label });
+      last = { name: definition.name };
+    } else {
+      const draft = makeDraft(definition, { lastInput: item.input, description: item.label });
+      state.plan = draft;
+      autoLayout(false);
+      drafts.save(clone(draft));
+      rejected = { draft, issues: errorsOf(r.body) };
+      last = null;
+    }
+  }
+  await server.refresh();
+  if (rejected && !last) {
+    openPlan(rejected.draft);
+    state.serverIssues = rejected.issues;
+    renderIssues();
+  } else if (last) {
+    await openStored(last.name);
+  }
+  const parts = [];
+  if (stored) parts.push(`stored ${stored} workflow${stored === 1 ? '' : 's'}`);
+  if (rejected) parts.push(`kept ${items.length - stored} as draft${items.length - stored === 1 ? '' : 's'} the server rejected`);
+  toast(`${fileName}: ${parts.join(', ')}`);
 }
 
 async function importFiles(files) {
-  if (!confirmDiscard()) return;
-  for (const file of files) importJson(await file.text(), file.name);
+  if (!files.length || !confirmDiscard()) return;
+  for (const file of files) await importJson(await file.text(), file.name);
 }
 
 function downloadJson() {
@@ -659,6 +801,12 @@ function computeLevels() {
   return level;
 }
 
+/** Positions are editor state: kept per workflow name, never a new version */
+function layoutChanged() {
+  if (state.plan.stored) saveEditorMeta();
+  else markDirty();
+}
+
 function autoLayout(dirty = true) {
   const level = computeLevels();
   const rows = {};
@@ -668,7 +816,7 @@ function autoLayout(dirty = true) {
     state.plan.layout[step.id] = { x: ORIGIN + col * (NODE_W + GAP_X), y: ORIGIN + (rows[col] - 1) * (NODE_H + GAP_Y) };
   }
   if (dirty) {
-    markDirty();
+    layoutChanged();
     renderBoard();
   }
 }
@@ -736,7 +884,7 @@ function checkPlan() {
       }
     }
     const upstream = upstreamOf(step.id);
-    for (const expr of expressionsIn(step.params ?? {})) {
+    for (const expr of expressionsIn([step.params ?? {}, step.when ?? '', step.forEach ?? ''])) {
       for (const [, name] of expr.matchAll(/\binput\.([A-Za-z_]\w*)/g)) {
         if (!declared.has(name)) issues.push({ stepId: step.id, text: `${where} uses undeclared input "${name}"` });
       }
@@ -761,29 +909,43 @@ function checkPlan() {
 
 function renderHeader() {
   const plan = state.plan;
+  const latest = server.latestOf(plan.definition.name);
+  let status;
+  if (!plan.stored) status = state.dirty ? 'draft · saved in this browser' : 'draft · not on the server yet';
+  else if (state.dirty) status = '• unsaved changes';
+  else status = `stored · version ${plan.version}${latest > plan.version ? ` (latest is ${latest})` : ''}`;
   $('planTitle').textContent = plan.definition.name;
-  $('dirty').textContent = state.dirty ? '• unsaved changes' : plan.version ? `saved · version ${plan.version}` : 'not saved yet';
+  $('dirty').textContent = status;
+  $('save').textContent = plan.stored ? 'Save new version' : 'Save to server';
   document.title = `${plan.definition.name} · OrchaLite Builder`;
 }
 
+function planRow(selected, title, sub, onClick) {
+  const row = el('button', { type: 'button', className: `item${selected ? ' selected' : ''}` }, [
+    el('span', { textContent: title }),
+    el('span', { className: 'sub', textContent: sub }),
+  ]);
+  row.addEventListener('click', onClick);
+  return row;
+}
+
 function renderPlans() {
-  const plans = store.list();
   const host = $('plans');
-  if (!plans.length) {
-    host.replaceChildren(el('span', { className: 'hint', textContent: 'No saved plans yet.' }));
-    return;
+  const rows = [];
+  for (const draft of drafts.list()) {
+    rows.push(planRow(draft.key === state.plan?.key, draft.definition.name, `draft · ${draft.definition.steps.length} steps · ${new Date(draft.updatedAt).toLocaleString()}`, () => {
+      if (draft.key === state.plan.key || !confirmDiscard()) return;
+      openPlan(drafts.get(draft.key));
+    }));
   }
-  host.replaceChildren(...plans.map(plan => {
-    const row = el('button', { type: 'button', className: `item${plan.id === state.plan?.id ? ' selected' : ''}` }, [
-      el('span', { textContent: plan.definition.name }),
-      el('span', { className: 'sub', textContent: `${plan.definition.steps.length} steps · v${plan.version} · ${new Date(plan.updatedAt).toLocaleString()}` }),
-    ]);
-    row.addEventListener('click', () => {
-      if (plan.id === state.plan.id || !confirmDiscard()) return;
-      openPlan(store.get(plan.id));
-    });
-    return row;
-  }));
+  for (const wf of server.workflows) {
+    const key = `wf:${wf.name}`;
+    rows.push(planRow(key === state.plan?.key, wf.name, `v${wf.latestVersion} · ${wf.versions} version${wf.versions === 1 ? '' : 's'} · ${new Date(wf.updatedAt).toLocaleString()}`, () => {
+      if ((key === state.plan.key && !state.dirty) || !confirmDiscard()) return;
+      openStored(wf.name);
+    }));
+  }
+  host.replaceChildren(...(rows.length ? rows : [el('span', { className: 'hint', textContent: 'No workflows yet.' })]));
 }
 
 function renderTemplates() {
@@ -792,23 +954,19 @@ function renderTemplates() {
     host.replaceChildren(el('span', { className: 'hint', textContent: 'No templates available.' }));
     return;
   }
-  host.replaceChildren(...state.templates.map(template => {
-    const row = el('button', { type: 'button', className: 'item' }, [
-      el('span', { textContent: template.workflow.name }),
-      el('span', { className: 'sub', textContent: template.label }),
-    ]);
-    row.addEventListener('click', () => {
-      if (!confirmDiscard()) return;
-      const definition = clone(template.workflow);
-      definition.name = uniqueName(definition.name);
-      const plan = makePlan(definition, { lastInput: clone(template.input ?? {}), description: template.label });
-      openPlan(plan);
-      state.dirty = true;
-      renderHeader();
-      toast('Template copied into a new plan. Save it to keep it.');
-    });
-    return row;
-  }));
+  host.replaceChildren(...state.templates.map(template => planRow(false, template.workflow.name, template.label, () => {
+    if (!confirmDiscard()) return;
+    const definition = clone(template.workflow);
+    definition.name = uniqueName(definition.name);
+    const input = clone(template.input ?? {});
+    // Examples notify this server's inbox, wherever it runs
+    if (definition.input?.webhookUrl) input.webhookUrl = `${location.origin}/inbox/${definition.name}`;
+    const draft = makeDraft(definition, { lastInput: input, description: template.label });
+    openPlan(draft);
+    drafts.save(clone(draft));
+    renderPlans();
+    toast('Template copied into a draft. Save it to store it on the server.');
+  })));
 }
 
 function renderPalette() {
@@ -863,6 +1021,7 @@ function renderBoard() {
     const node = el('div', { className: nodeClass(step, invalidIds), 'data-id': step.id, title: `${step.id} (${step.task})` }, [
       el('div', { className: 'id', textContent: step.id }),
       el('div', { className: 'task', textContent: step.task || '(no task)' }),
+      step.when || step.forEach ? el('span', { className: 'ctl', textContent: [step.when ? 'when' : '', step.forEach ? 'each' : ''].filter(Boolean).join(' · '), title: [step.when && `when ${step.when}`, step.forEach && `forEach ${step.forEach}`].filter(Boolean).join('\n') }) : null,
       el('span', { className: 'port in', title: 'Input: connect another step\'s right dot here' }),
       el('span', { className: 'port out', title: 'Drag to the step that should run after this one' }),
     ]);
@@ -944,7 +1103,7 @@ function startNodeDrag(event, id) {
   const onUp = () => {
     node.removeEventListener('pointermove', onMove);
     node.removeEventListener('pointerup', onUp);
-    if (moved) markDirty();
+    if (moved) layoutChanged();
     select({ kind: 'step', id });
   };
   node.addEventListener('pointermove', onMove);
@@ -987,7 +1146,7 @@ function select(selection) {
 // ===========================================================================
 
 function renderIssues() {
-  const issues = checkPlan();
+  const issues = [...checkPlan(), ...state.serverIssues.map(text => ({ text: `Server: ${text}` }))];
   $('issues').replaceChildren(...issues.map(issue => {
     const row = el('div', { className: 'issue' });
     if (issue.stepId && stepById(issue.stepId)) {
@@ -1171,6 +1330,7 @@ function referenceChips(step) {
   const refs = [
     ...Object.keys(state.plan.definition.input).map(name => `{{ input.${name} }}`),
     ...[...upstreamOf(step.id)].map(id => `{{ steps.${id}.output }}`),
+    ...(step.forEach ? ['{{ item }}', '{{ index }}'] : []),
   ];
   if (!refs.length) {
     return el('p', { className: 'hint', textContent: 'Declare run inputs in the plan settings, or connect an earlier step, to reference values here.' });
@@ -1215,6 +1375,26 @@ function renderStepInspector(step) {
   const remove = el('button', { type: 'button', className: 'danger', textContent: 'Delete step' });
   remove.addEventListener('click', () => removeStep(step.id));
 
+  // when and forEach: expressions over input and upstream outputs
+  const controlField = (key, label, help) => {
+    const input = el('input', { value: step[key] ?? '', spellcheck: false, placeholder: '{{ ... }}' });
+    trackField(input);
+    input.addEventListener('input', () => {
+      if (input.value.trim()) step[key] = input.value;
+      else delete step[key];
+      markDirty();
+      renderIssues();
+      renderBoardClassesOnly();
+    });
+    // The node's marker and the item/index chips follow once editing settles. Only
+    // those are redrawn, so the field the user moved to keeps its focus and text.
+    input.addEventListener('change', () => {
+      renderBoard();
+      $('refChips')?.replaceChildren(referenceChips(step));
+    });
+    return el('div', { className: 'field' }, [el('label', { textContent: label }), input, el('div', { className: 'help', textContent: help })]);
+  };
+
   const fields = [];
   if (task) {
     const props = task.paramsSchema.properties ?? {};
@@ -1233,9 +1413,11 @@ function renderStepInspector(step) {
     el('div', { className: 'field' }, [el('label', { textContent: 'Task' }), taskSelect,
       task?.description ? el('div', { className: 'help', textContent: task.description }) : null]),
     el('div', { className: 'field' }, [el('label', { textContent: 'Runs after' }), deps]),
+    controlField('when', 'Run only when', 'Optional {{ ... }} condition. When false, this step and everything after it is skipped.'),
+    controlField('forEach', 'For each', 'Optional {{ ... }} list. The step runs once per item; params can use {{ item }} and {{ index }}.'),
     el('h2', { textContent: 'Params' }),
     el('p', { className: 'hint', style: 'margin: 0 0 4px', textContent: 'Insert a reference into the last field you clicked:' }),
-    referenceChips(step),
+    el('div', { id: 'refChips' }, referenceChips(step)),
     ...fields,
     el('div', { className: 'row', style: 'margin-top: 16px' }, [remove]),
   );
@@ -1346,9 +1528,13 @@ function renderPlanInspector() {
     markDirty();
     renderIssues();
   });
-  const description = el('textarea', { value: state.plan.description ?? '', placeholder: 'What this plan is for (kept with the plan, not sent to the server)' });
+  const description = el('textarea', { value: state.plan.description ?? '', placeholder: 'What this plan is for (kept in this browser, not sent to the server)' });
   description.style.fontFamily = 'inherit';
-  description.addEventListener('input', () => { state.plan.description = description.value; markDirty(); });
+  description.addEventListener('input', () => {
+    state.plan.description = description.value;
+    if (state.plan.stored) saveEditorMeta();
+    else markDirty();
+  });
 
   const addInput = el('button', { type: 'button', textContent: 'Add input' });
   addInput.addEventListener('click', () => {
@@ -1359,34 +1545,61 @@ function renderPlanInspector() {
     renderInspector();
   });
 
-  const duplicate = el('button', { type: 'button', textContent: 'Duplicate plan' });
+  const duplicate = el('button', { type: 'button', textContent: 'Duplicate as draft' });
   duplicate.addEventListener('click', () => {
     if (!confirmDiscard()) return;
-    const copy = makePlan(clone(def), { layout: clone(state.plan.layout), description: state.plan.description, lastInput: clone(state.plan.lastInput ?? {}) });
+    const copy = makeDraft(clone(def), { layout: clone(state.plan.layout), description: state.plan.description, lastInput: clone(state.plan.lastInput ?? {}) });
     copy.definition.name = uniqueName(`${def.name}-copy`);
     openPlan(copy);
-    state.dirty = true;
-    renderHeader();
+    drafts.save(clone(copy));
+    renderPlans();
   });
-  const remove = el('button', { type: 'button', className: 'danger', textContent: 'Delete plan' });
-  remove.addEventListener('click', () => {
-    if (!confirm(`Delete "${def.name}" from this browser?`)) return;
-    store.remove(state.plan.id);
-    const next = store.list()[0];
-    state.dirty = false;
-    openPlan(next ? store.get(next.id) : makePlan(blankDefinition()));
-  });
+
+  const manage = [duplicate];
+  if (!state.plan.stored) {
+    const discard = el('button', { type: 'button', className: 'danger', textContent: 'Discard draft' });
+    discard.addEventListener('click', async () => {
+      if (!confirm(`Discard the draft "${def.name}"?`)) return;
+      drafts.remove(state.plan.key);
+      state.dirty = false;
+      const next = server.workflows[0];
+      if (next) await openStored(next.name);
+      else openPlan(makeDraft(blankDefinition()));
+    });
+    manage.push(discard);
+  }
+
+  const versionsHost = el('div', { className: 'chips' }, el('span', { className: 'hint', textContent: 'Loading…' }));
+  if (state.plan.stored) {
+    server.versions(def.name).then(versions => {
+      versionsHost.replaceChildren(...versions.map(({ version, createdAt }) => {
+        const current = version === state.plan.version;
+        const chip = el('button', { type: 'button', className: 'chip', textContent: `v${version}${current ? ' (open)' : ''}`, title: `Saved ${new Date(createdAt).toLocaleString()}` });
+        chip.disabled = current;
+        chip.addEventListener('click', () => { if (confirmDiscard()) openStored(def.name, version); });
+        return chip;
+      }));
+    });
+  }
 
   $('inspector').replaceChildren(
     el('h2', { textContent: 'Plan' }),
-    el('div', { className: 'field' }, [el('label', { textContent: 'Name' }), nameInput]),
+    el('div', { className: 'field' }, [el('label', { textContent: 'Name' }), nameInput,
+      el('div', { className: 'help', textContent: state.plan.stored
+        ? 'Versions are stored per name; saving under a new name starts a new workflow.'
+        : 'The name it will be stored under.' })]),
     el('div', { className: 'field' }, [el('label', { textContent: 'Description' }), description]),
     el('h2', { textContent: 'Run inputs' }),
     el('p', { className: 'hint', style: 'margin: 0', textContent: 'Values supplied each time the plan runs. They are checked before any step starts.' }),
     ...Object.entries(def.input).map(([name, declaration]) => inputDeclarationRow(name, declaration)),
     el('div', { className: 'row', style: 'margin-top: 8px' }, [addInput]),
+    ...(state.plan.stored ? [
+      el('h2', { textContent: 'Versions' }),
+      el('p', { className: 'hint', style: 'margin: 0 0 6px', textContent: 'Stored versions never change. Open one to view it, run it, or save it again as the newest version.' }),
+      versionsHost,
+    ] : []),
     el('h2', { textContent: 'Manage' }),
-    el('div', { className: 'row' }, [duplicate, remove]),
+    el('div', { className: 'row' }, manage),
     el('p', { className: 'hint', textContent: 'Select a step or connection on the canvas to edit it.' }),
   );
 }
@@ -1542,9 +1755,14 @@ function renderRunPanel() {
       ? el('p', { className: 'hint', style: 'margin: 0', textContent: 'Inputs are checked here, then again by the server, before any step starts.' })
       : el('p', { className: 'hint', style: 'margin: 0', textContent: 'This plan declares no run inputs. Add some in the plan settings to make it reusable.' }),
     ...fields,
-    el('div', { className: 'row', style: 'margin-top: 14px' }, [runButton, el('span', { className: 'hint', textContent: 'Runs the plan as it is on the canvas, saved or not.' })]),
+    el('div', { className: 'row', style: 'margin-top: 14px' }, [runButton, el('span', { className: 'hint', textContent: state.plan.stored && !state.dirty
+      ? `Runs stored version ${state.plan.version}.`
+      : 'Runs the plan as it is on the canvas, as a draft run.' })]),
     results,
+    el('h2', { textContent: 'Recent runs' }),
+    el('div', { className: 'list', id: 'recentRuns' }, el('span', { className: 'hint', textContent: 'Loading…' })),
   );
+  renderRecentRuns();
 }
 
 function describe(value) {
@@ -1562,11 +1780,20 @@ async function runPlan(input, button, results) {
   results.replaceChildren(el('p', { className: 'hint', textContent: 'Running… results appear when every step has finished.' }));
   const started = performance.now();
   try {
-    const response = await fetch('/workflow/run', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ definition: exportDefinition(), input }),
-    });
+    // A stored, unchanged plan runs as that version, so run history records which one ran
+    const asStored = state.plan.stored && !state.dirty;
+    saveEditorMeta();
+    const response = asStored
+      ? await fetch(`/workflows/${enc(state.plan.definition.name)}/runs`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ input, version: state.plan.version }),
+        })
+      : await fetch('/workflow/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ definition: exportDefinition(), input }),
+        });
     const text = await response.text();
     let body = {};
     try { body = text ? JSON.parse(text) : {}; } catch { body = { message: text }; }
@@ -1575,15 +1802,22 @@ async function runPlan(input, button, results) {
     if (response.ok) {
       // Shape: { runId, steps: { <id>: { status, output } } }
       const stepResults = body.steps ?? {};
-      for (const step of steps()) if (stepResults[step.id]) state.stepResults[step.id] = 'ok';
+      for (const step of steps()) {
+        const status = stepResults[step.id]?.status;
+        if (status) state.stepResults[step.id] = status === 'skipped' ? 'skipped' : 'ok';
+      }
       results.replaceChildren(el('div', { className: 'banner ok' }, [
         el('b', { textContent: `Completed in ${seconds}s.` }),
-        body.runId ? el('div', { className: 'hint', textContent: `Run ${body.runId}` }) : null,
+        body.workflow ? el('div', { textContent: `Stored workflow ${body.workflow.name} v${body.workflow.version}` }) : el('div', { textContent: 'Draft run (not a stored version)' }),
+        body.runId ? runLink(body.runId) : null,
       ]));
       for (const step of steps()) {
-        const output = stepResults[step.id]?.output;
+        const result = stepResults[step.id];
+        const output = result?.output;
+        const summaryText = result?.status === 'skipped' ? `skipped: ${result.reason}`
+          : result?.iterations !== undefined ? `ran for ${result.iterations} item${result.iterations === 1 ? '' : 's'}` : describe(output);
         results.append(el('details', { className: 'result' }, [
-          el('summary', {}, [el('b', { textContent: step.id }), el('code', { textContent: step.task }), el('span', { className: 'out', textContent: describe(output) })]),
+          el('summary', {}, [el('b', { textContent: step.id }), el('code', { textContent: step.task }), el('span', { className: 'out', textContent: summaryText })]),
           el('pre', { textContent: output === undefined ? '(no output)' : JSON.stringify(output, null, 2) }),
         ]));
       }
@@ -1595,6 +1829,7 @@ async function runPlan(input, button, results) {
       if (messages.length > 1) details.unshift(...messages.slice(1));
       const banner = el('div', { className: 'banner bad' }, [el('b', { textContent: `${kind} after ${seconds}s. ` }), document.createTextNode(messages[0])]);
       if (details.length) banner.append(el('ul', {}, details.map(d => el('li', { textContent: d }))));
+      if (body.runId) banner.append(runLink(body.runId));
       results.replaceChildren(banner);
     }
   } catch (error) {
@@ -1603,7 +1838,30 @@ async function runPlan(input, button, results) {
     button.disabled = false;
     button.textContent = 'Run plan';
     renderBoardClassesOnly();
+    renderRecentRuns();
   }
+}
+
+function runLink(runId) {
+  return el('div', {}, el('a', { href: `/#run=${runId}`, target: '_blank', rel: 'noopener', textContent: `Run ${runId} in run history ↗` }));
+}
+
+/** The last few recorded runs of this plan's name, from /runs */
+async function renderRecentRuns() {
+  const host = $('recentRuns');
+  if (!host) return;
+  const r = await api('GET', `/runs?name=${enc(state.plan.definition.name)}&limit=5`);
+  if (!r.ok || !document.body.contains(host)) return;
+  host.replaceChildren(...(r.body.length ? r.body.map(run => el('a', {
+    className: 'item',
+    href: `/#run=${run.id}`,
+    target: '_blank',
+    rel: 'noopener',
+    style: 'text-decoration: none; color: inherit; border: 1px solid var(--border); border-radius: 6px',
+  }, [
+    el('span', {}, [el('span', { className: `chip status-${run.status}`, textContent: run.status }), document.createTextNode(` ${new Date(run.startedAt).toLocaleString(undefined, { timeZoneName: 'short' })}`)]),
+    el('span', { className: 'sub', textContent: [run.workflow ? `v${run.workflow.version}` : 'draft', run.durationMs != null ? `${run.durationMs} ms` : '', run.failedStepId ? `failed at ${run.failedStepId}` : ''].filter(Boolean).join(' · ') }),
+  ])) : [el('span', { className: 'hint', textContent: 'No runs recorded for this name yet.' })]));
 }
 
 function setRightTab(tab) {
@@ -1633,7 +1891,10 @@ $('newPlan').addEventListener('click', () => {
   if (!confirmDiscard()) return;
   const definition = blankDefinition();
   definition.name = uniqueName('untitled-workflow');
-  openPlan(makePlan(definition));
+  const draft = makeDraft(definition);
+  openPlan(draft);
+  drafts.save(clone(draft));
+  renderPlans();
 });
 $('save').addEventListener('click', savePlan);
 $('download').addEventListener('click', downloadJson);
@@ -1716,9 +1977,13 @@ async function boot() {
   renderPalette();
   renderTemplates();
 
-  const last = prefs.get('lastPlan') && store.get(prefs.get('lastPlan'));
-  const first = store.list()[0];
-  openPlan(last || (first ? store.get(first.id) : makePlan(blankDefinition())));
+  await server.refresh();
+  const last = prefs.get('lastPlan') ?? '';
+  if (last.startsWith('draft:') && drafts.get(last)) openPlan(drafts.get(last));
+  else if (last.startsWith('wf:') && server.workflows.some(w => `wf:${w.name}` === last)) await openStored(last.slice(3));
+  else if (drafts.list()[0]) openPlan(drafts.list()[0]);
+  else if (server.workflows[0]) await openStored(server.workflows[0].name);
+  else openPlan(makeDraft(blankDefinition()));
   setView(prefs.get('view') === 'json' ? 'json' : 'canvas');
 }
 

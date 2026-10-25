@@ -439,6 +439,52 @@ describe('runWorkflow', () => {
 
     expect(first.runId).not.toBe(second.runId);
   });
+
+  it('reports the run and each step to the hooks, in order', async () => {
+    const calls: string[] = [];
+    const boom = fakeTask(async () => {
+      throw new Error('kaput');
+    });
+    const hooks = {
+      onRunStarted: async (input: Record<string, unknown>) => { calls.push(`run ${JSON.stringify(input)}`); },
+      onStepStarted: async (s: WorkflowStep) => { calls.push(`start ${s.id}`); },
+      onStepFinished: async (s: WorkflowStep, r: { status: string; reason?: string }) => { calls.push(`${r.status} ${s.id}${r.reason ? ` (${r.reason})` : ''}`); },
+      onStepFailed: async (s: WorkflowStep, e: TaskExecutionError) => { calls.push(`fail ${s.id}: ${e.message}`); },
+    };
+
+    await expect(
+      runWorkflow(
+        workflow(
+          [
+            step('a', 't', [], { n: '{{ input.n }}' }),
+            step('skip', 't', ['a'], undefined, { when: '{{ false }}' }),
+            step('b', 'boom', ['a']),
+          ],
+          { n: { type: 'integer', default: 3 } }
+        ),
+        lookup({ t: echo, boom }),
+        { ...quiet, hooks }
+      )
+    ).rejects.toBeInstanceOf(TaskExecutionError);
+
+    expect(calls).toEqual([
+      'run {"n":3}',
+      'start a',
+      'succeeded a',
+      'start skip',
+      'skipped skip (when was false)',
+      'start b',
+      'fail b: Task execution failed: kaput',
+    ]);
+  });
+
+  it('does not report a run whose definition or input is rejected', async () => {
+    const onRunStarted = jest.fn(async () => undefined);
+    await expect(
+      runWorkflow(workflow([step('a', 't')], { n: 'integer' }), anyTasks, { ...quiet, input: { n: 'x' }, hooks: { onRunStarted } })
+    ).rejects.toBeInstanceOf(RunInputError);
+    expect(onRunStarted).not.toHaveBeenCalled();
+  });
 });
 
 describe('formatSchemaErrors', () => {

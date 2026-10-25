@@ -209,12 +209,50 @@
     overflow-wrap: anywhere;
   }
   .body > button { margin-top: 8px; }
+  .runs { display: grid; gap: 6px; }
+  .run-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 4px 10px;
+    align-items: center;
+    width: 100%;
+    text-align: left;
+    padding: 8px 10px;
+  }
+  .run-row.selected { border-color: var(--accent); outline: 1px solid var(--accent); }
+  .run-row .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .run-row .meta { grid-column: 2 / 4; color: var(--muted); font-size: 12px; }
+  .run-row .dur { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .run-badge {
+    font: 600 10.5px/1 var(--mono);
+    letter-spacing: 0.03em;
+    padding: 4px 6px;
+    border-radius: 4px;
+    background: var(--code-bg);
+    color: var(--muted);
+    border: 1px solid var(--border);
+  }
+  .run-badge.SUCCEEDED { background: var(--ok-bg); color: var(--ok); border-color: transparent; }
+  .run-badge.FAILED { background: var(--bad-bg); color: var(--bad); border-color: transparent; }
+  .run-badge.RUNNING { color: var(--accent); border-color: var(--accent); }
+  .banner.neutral { background: var(--code-bg); color: var(--text); }
+  .timeline { display: grid; gap: 6px; margin: 4px 0 12px; }
+  .tl-row { display: grid; grid-template-columns: minmax(80px, 140px) minmax(0, 1fr) 64px; gap: 10px; align-items: center; }
+  .tl-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+  .tl-track { position: relative; height: 14px; background: var(--code-bg); border-radius: 4px; }
+  .tl-bar { position: absolute; top: 0; bottom: 0; min-width: 3px; border-radius: 4px; background: var(--muted); }
+  .tl-bar.SUCCEEDED { background: var(--ok); }
+  .tl-bar.FAILED { background: var(--bad); }
+  .tl-bar.RUNNING { background: var(--accent); }
+  .tl-dur { color: var(--muted); font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
+  .err { color: var(--bad); overflow-wrap: anywhere; }
 </style>
 </head>
 <body>
 <header>
   <h1>OrchaLite</h1>
-  <span>Define a workflow, see its step graph, run it.</span>
+  <span>Define a workflow, see its step graph, run it, look back at past runs.</span>
+  <a href="/builder.html" style="margin-left: auto">Open the canvas builder</a>
 </header>
 
 <main>
@@ -239,6 +277,24 @@
     <section>
       <h2>Stored workflows</h2>
       <div class="list" id="stored"><span class="hint">Loading…</span></div>
+    </section>
+
+    <section>
+      <div class="row" style="justify-content: space-between; margin-bottom: 12px">
+        <h2 style="margin: 0">Run history</h2>
+        <div class="row">
+          <select id="historyStatus" aria-label="Filter runs by status" style="flex: none">
+            <option value="">All</option>
+            <option>SUCCEEDED</option>
+            <option>FAILED</option>
+            <option>RUNNING</option>
+            <option>ABANDONED</option>
+          </select>
+          <button id="historyRefresh" type="button">Refresh</button>
+        </div>
+      </div>
+      <div class="runs" id="history"><span class="hint">Loading…</span></div>
+      <button id="historyMore" type="button" hidden style="margin-top: 8px; width: 100%">Load older runs</button>
     </section>
 
     <section>
@@ -603,6 +659,7 @@ async function run(storedName) {
   $('results').replaceChildren(el('span', { className: 'hint', textContent: 'Running… results appear when every step has finished.' }));
 
   const started = performance.now();
+  selectedRunId = null;
   try {
     const response = storedName
       ? await fetch(`/workflows/${encodeURIComponent(storedName)}/runs`, {
@@ -618,6 +675,7 @@ async function run(storedName) {
     const text = await response.text();
     const body = text ? JSON.parse(text) : {};
     const ms = performance.now() - started;
+    selectedRunId = body.runId ?? null;
 
     if (response.ok) {
       for (const step of parsed.steps) stepStatus[step.id] = body.steps[step.id]?.status === 'skipped' ? 'skipped' : 'done';
@@ -633,8 +691,168 @@ async function run(storedName) {
     button.textContent = 'Run workflow';
     refresh();
     loadInbox();
+    loadHistory();
   }
 }
+
+// --- Run history ---------------------------------------------------------
+
+const HISTORY_PAGE = 20;
+let historyRuns = [];
+let selectedRunId = null;
+
+function formatMs(ms) {
+  if (ms == null) return '';
+  return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`;
+}
+
+function formatTime(iso) {
+  const date = new Date(iso);
+  const sameDay = date.toDateString() === new Date().toDateString();
+  // Show the viewer's time zone so times can be compared with server logs
+  return sameDay
+    ? date.toLocaleTimeString(undefined, { timeZoneName: 'short' })
+    : date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'long' });
+}
+
+const badge = status => el('span', { className: `run-badge ${status}`, textContent: status });
+
+function renderHistory() {
+  const host = $('history');
+  if (!historyRuns.length) {
+    host.replaceChildren(el('span', { className: 'hint', textContent: 'No runs yet. Runs appear here as soon as they start.' }));
+    return;
+  }
+  host.replaceChildren(...historyRuns.map(run => {
+    const meta = [formatTime(run.startedAt)];
+    if (run.workflow) meta.push(`stored v${run.workflow.version}`);
+    if (run.failedStepId) meta.push(`failed at "${run.failedStepId}"`);
+    const row = el('button', { type: 'button', className: `run-row${run.id === selectedRunId ? ' selected' : ''}` }, [
+      badge(run.status),
+      el('span', { className: 'name', textContent: run.name }),
+      el('span', { className: 'dur', textContent: formatMs(run.durationMs) }),
+      el('span', { className: 'meta', textContent: meta.join(' · ') }),
+    ]);
+    row.addEventListener('click', () => showRun(run.id));
+    return row;
+  }));
+}
+
+async function loadHistory({ more = false } = {}) {
+  const params = new URLSearchParams({ limit: HISTORY_PAGE });
+  if ($('historyStatus').value) params.set('status', $('historyStatus').value);
+  if (more && historyRuns.length) params.set('before', historyRuns[historyRuns.length - 1].id);
+  try {
+    const response = await fetch(`/runs?${params}`);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const page = await response.json();
+    historyRuns = more ? historyRuns.concat(page) : page;
+    $('historyMore').hidden = page.length < HISTORY_PAGE;
+    renderHistory();
+  } catch (error) {
+    $('history').replaceChildren(el('span', { className: 'hint', textContent: `Could not load run history: ${error.message}` }));
+  }
+}
+
+function renderTimeline(run) {
+  const start = Date.parse(run.startedAt);
+  const end = run.endedAt ? Date.parse(run.endedAt) : Math.max(start, ...run.steps.map(s => Date.parse(s.endedAt ?? s.startedAt ?? run.startedAt)));
+  const total = Math.max(end - start, 1);
+  return el('div', { className: 'timeline' }, run.steps.map(step => {
+    const track = el('div', { className: 'tl-track' });
+    if (step.startedAt) {
+      const from = Date.parse(step.startedAt) - start;
+      const to = (step.endedAt ? Date.parse(step.endedAt) : end) - start;
+      const bar = el('div', { className: `tl-bar ${step.status}`, title: `${step.status} · ${formatMs(to - from)}` });
+      bar.style.left = `${(from / total) * 100}%`;
+      bar.style.width = `${Math.max(((to - from) / total) * 100, 0.5)}%`;
+      track.append(bar);
+    }
+    return el('div', { className: 'tl-row' }, [
+      el('span', { className: 'tl-label', textContent: step.id, title: `${step.id} (${step.task})` }),
+      track,
+      el('span', { className: 'tl-dur', textContent: step.durationMs != null ? formatMs(step.durationMs) : step.status.toLowerCase() }),
+    ]);
+  }));
+}
+
+function loadIntoEditor(run) {
+  editor.value = JSON.stringify(run.definition, null, 2);
+  inputEditor.value = JSON.stringify(run.input ?? {}, null, 2);
+  stepStatus = {};
+  for (const step of run.steps) {
+    if (step.status === 'SUCCEEDED') stepStatus[step.id] = 'done';
+    if (step.status === 'FAILED') stepStatus[step.id] = 'failed';
+    if (step.status === 'SKIPPED') stepStatus[step.id] = 'skipped';
+  }
+  refresh();
+}
+
+async function showRun(runId) {
+  selectedRunId = runId;
+  renderHistory();
+  const host = $('results');
+  host.replaceChildren(el('span', { className: 'hint', textContent: 'Loading run…' }));
+  try {
+    const [run, events] = await Promise.all([
+      fetch(`/runs/${runId}`).then(r => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))),
+      fetch(`/runs/${runId}/events`).then(r => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))),
+    ]);
+    if (selectedRunId !== runId) return; // another run was picked meanwhile
+
+    const outputs = {};
+    for (const event of events) {
+      if (event.type === 'StepSucceeded') outputs[event.data.stepId] = event.data.output;
+    }
+
+    const kind = run.status === 'SUCCEEDED' ? 'ok' : run.status === 'FAILED' ? 'bad' : 'neutral';
+    const headline = `${run.name}: ${run.status.toLowerCase()}` +
+      (run.durationMs != null ? ` in ${formatMs(run.durationMs)}` : '') +
+      ` · started ${formatTime(run.startedAt)}`;
+    const banner = el('div', { className: `banner ${kind}` }, el('b', { textContent: headline }));
+    if (run.error) banner.append(el('div', { textContent: run.failedStepId ? `Step "${run.failedStepId}": ${run.error}` : run.error }));
+
+    const load = el('button', { type: 'button', textContent: 'Load into editor' });
+    load.addEventListener('click', () => loadIntoEditor(run));
+    const where = run.workflow ? ` · stored workflow ${run.workflow.name} v${run.workflow.version}` : ' · ad-hoc run';
+    const actions = el('div', { className: 'row', style: 'margin-bottom: 12px' }, [
+      load,
+      el('span', { className: 'hint', textContent: `Run ${run.id}${where} · ${events.length} events` }),
+    ]);
+    const inputBlock = run.input && Object.keys(run.input).length
+      ? el('details', { className: 'step' }, [el('summary', {}, [el('b', { textContent: 'Input' })]), el('div', { className: 'body' }, el('pre', { textContent: JSON.stringify(run.input, null, 2) }))])
+      : null;
+
+    host.replaceChildren(banner, actions, renderTimeline(run));
+    if (inputBlock) host.append(inputBlock);
+    for (const step of run.steps) {
+      const summary = el('summary', {}, [
+        el('b', { textContent: step.id }),
+        el('code', { textContent: step.task }),
+        badge(step.status),
+        el('span', { className: 'out', textContent: step.status === 'SUCCEEDED'
+          ? (step.iterations !== undefined ? `ran for ${step.iterations} item${step.iterations === 1 ? '' : 's'}` : describe(outputs[step.id]))
+          : '' }),
+      ]);
+      let body;
+      if (step.status === 'SUCCEEDED') {
+        body = renderValue(outputs[step.id]);
+        if (outputs[step.id]?.truncated) {
+          body.prepend(el('p', { className: 'hint', textContent: `Output was ${outputs[step.id].sizeBytes.toLocaleString()} bytes, so only a preview was stored.` }));
+        }
+      } else if (step.status === 'FAILED') {
+        body = el('div', { className: 'body' }, el('div', { className: 'err', textContent: step.error }));
+      } else {
+        const why = { SKIPPED: `Skipped: ${step.reason ?? 'an earlier step failed'}.`, PENDING: 'Never started.', RUNNING: 'Was still running when the run ended.' };
+        body = el('div', { className: 'body' }, el('span', { className: 'hint', textContent: why[step.status] }));
+      }
+      host.append(el('details', { className: 'step' }, [summary, body]));
+    }
+  } catch (error) {
+    host.replaceChildren(el('div', { className: 'banner bad', textContent: `Could not load run ${runId}: ${error.message}` }));
+  }
+}
+
 
 // --- Stored workflows, connections, inbox -------------------------------
 
@@ -800,6 +1018,13 @@ $('inboxUrl').textContent = `${location.origin}/inbox/<channel>`;
 loadStored();
 loadConnections();
 loadInbox();
+$('historyRefresh').addEventListener('click', () => loadHistory());
+$('historyStatus').addEventListener('change', () => loadHistory());
+$('historyMore').addEventListener('click', () => loadHistory({ more: true }));
+loadHistory();
+// Links like /#run=<id> (from the builder) open that run
+const linkedRun = location.hash.match(/^#run=([0-9a-f]{24})$/);
+if (linkedRun) showRun(linkedRun[1]);
 
 fetch('/examples.json')
   .then(response => response.json())

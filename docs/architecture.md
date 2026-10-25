@@ -4,9 +4,12 @@ Four diagrams: what the code does today (1, 2), and where the roadmap takes it (
 
 ## 1. Today: one request runs the whole workflow
 
-As of the end of phase A (generality). A definition is validated and compiled
-up front, then run inside the HTTP request. The run exists only in the memory
-of one process, so a crash or a client timeout loses it.
+As of the end of phase A (generality), plus run history. A definition is
+validated and compiled up front, then run inside the HTTP request. Each step
+is reported to a recorder that appends it to the run's history (see
+[run-history-design.md](run-history-design.md)), but the run itself lives in
+one process: a crash or client timeout ends it, and it is marked `ABANDONED`
+on the next start rather than resumed.
 
 ```mermaid
 sequenceDiagram
@@ -59,6 +62,7 @@ flowchart TB
             Defs["DefinitionsModule<br/>/workflows: versioned, immutable"]
             Conns["ConnectionsModule<br/>/connections: AES-256-GCM at rest"]
             Inbox["InboxModule<br/>/inbox: local webhook target"]
+            RunsM["RunsModule<br/>/runs: history, RunRecorder"]
         end
         Orch["OrchestratorModule<br/>TaskRegistry via DiscoveryService"]
         Engine["validateWorkflow + runWorkflow<br/>expressions, when, forEach"]
@@ -66,7 +70,7 @@ flowchart TB
         Tasks["TasksModule<br/>@TaskHandler classes"]
     end
 
-    Mongo[(MongoDB<br/>workflow_definitions, connections,<br/>task collections)]
+    Mongo[(MongoDB<br/>workflow_definitions, connections,<br/>run_events, workflow_runs,<br/>task collections)]
     Ext[(External APIs)]
 
     Client -->|HTTP, waits for the full run| Api
@@ -76,6 +80,8 @@ flowchart TB
     Engine --> Orch
     Orch -.->|discovered at startup| Tasks
     Engine -->|reads and writes step outputs| Results
+    Engine -->|hooks: each step's outcome| RunsM
+    RunsM --> Mongo
     Tasks --> Ext
     Tasks --> Mongo
     Defs --> Mongo
@@ -89,7 +95,7 @@ Dashed orange marks the weak points, which phase B addresses:
 
 | Where | Problem |
 | --- | --- |
-| step results | Run state lives in memory. A crash or client timeout loses the run; nothing can be inspected or resumed (B1). |
+| step results | Execution state lives in memory. History is recorded as the run goes, so a run can be inspected afterwards, but a crash or client timeout ends it and it cannot be resumed (B1, B2). |
 | `runWorkflow` | Runs inside the request, one step and one `forEach` item at a time (B2, B4). No retries or timeouts: the abort signal is never fired and `attempt` is always 1 (B3). The first failure discards the outputs of steps that already succeeded (B1). |
 | `delay` | Holds the request open, so it is capped at 60 seconds (B2). |
 

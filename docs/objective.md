@@ -115,11 +115,20 @@ As of 2026-10-25, phase A (generality) is done; 113 Jest tests pass.
 - The web UI edits, graphs, runs and stores workflows, manages connections,
   and shows a local webhook inbox. Its examples include the uptime alert and
   release watcher use cases, which an end-to-end test runs.
+- Every accepted run is recorded as it happens (a first slice of B1): an
+  append-only `run_events` timeline plus a `workflow_runs` summary rebuilt from
+  it, with the input and the stored version that ran. `GET /runs` lists and
+  filters them, and the UI has a run history panel with a step timeline. Runs
+  left `RUNNING` by a dead process are marked `ABANDONED` on restart.
+- A canvas builder (`/builder.html`) edits stored workflows as plans: drag and
+  connect steps, params forms from task schemas, run-input declarations and a
+  checked run form, versions, upload and download.
 
 Still true, and the subject of phase B:
 
 - A run happens inside the HTTP request, one step (and one `forEach` item) at
-  a time. Run state lives in memory, so a crash or client timeout loses it.
+  a time. History is recorded, but a run cut short by a crash or client
+  timeout is only marked `ABANDONED`, never resumed.
 - The first failing step aborts the run with a 500, and the outputs of steps
   that already succeeded are dropped.
 - No retries or timeouts: `signal` is never aborted and `attempt` is always 1.
@@ -231,6 +240,10 @@ decide what a persisted step record has to store.
     separating a definition from an execution.
   - Done when: a run's full history can be read back after the process
     restarts.
+  - Progress (2026-10-25): run history is in place (event timeline,
+    projected summary, `GET /runs/:id`, abandoned-run sweep); see
+    [run-history-design.md](run-history-design.md). Left for B1: asynchronous
+    runs (`202` and a run id) and status transitions as conditional updates.
 
 - [ ] **B2. API, scheduler and workers split**
   - Build: a scheduler that queues ready steps; workers that claim a step with
@@ -300,9 +313,10 @@ Several of these come back in later horizons, noted on each item.
   project of its own.
 - **Tasks in other languages or processes.** It needs a worker protocol over
   the network. Returns in horizon 4.
-- **A drag-and-connect editor.** The current UI edits JSON and draws the step
-  graph. `GET /tasks` with schemas and the run endpoints are designed so a
-  canvas editor could be added later. Returns in horizon 4.
+- **A full drag-and-connect editor.** A first canvas builder exists
+  (`/builder.html`, see [builder.md](builder.md)), built as parallel work on top
+  of `GET /tasks` schemas and `/workflows`. Collaboration, undo, zoom and
+  connectors with OAuth remain horizon 4.
 - **Multi-tenancy and authentication.** Single user, trusted network. Returns
   in horizon 4.
 - **Kafka, Cassandra and running as a cluster.** Horizons 2 and 3.
@@ -311,8 +325,8 @@ Several of these come back in later horizons, noted on each item.
 
 | Decision | Options | Leaning |
 | --- | --- | --- |
-| Where large step outputs live (needed for B1) | inline in `step_runs`, separate collection, object storage | Open |
-| Run history model (needed for B1) | mutable status documents, append-only events with status derived from them | Event-sourced: it is how Temporal works, and it suits MongoDB, Cassandra and Kafka alike, which keeps horizon 2 a port rather than a redesign |
+| Where large step outputs live (needed for B1) | inline in `step_runs`, separate collection, object storage | Inline in the `StepSucceeded` event for now, with outputs over 256 KB stored as a preview; revisit with B1's async runs |
+| Run history model (needed for B1) | mutable status documents, append-only events with status derived from them | Decided 2026-10-25: event-sourced (`run_events`) with a projected summary (`workflow_runs`) |
 | Try Kafka as the step dispatch queue in B2 | yes as a side experiment, no | Open. Its limits with retries and delays are a useful lesson, but it is not the queue to keep |
 
 ## Decision log
@@ -347,3 +361,7 @@ Several of these come back in later horizons, noted on each item.
 | 2026-10-25 | `mongo.findOne` and `mongo.upsert` take equality-only filters | The release watcher needs to read and write state; equality filters keep expression data from becoming query operators |
 | 2026-10-25 | A local webhook inbox (`/inbox`) receives notifications | The alerting use cases can be tried and tested end to end without an external service |
 | 2026-10-25 | `POST /workflow/run` takes `{ definition, input }` and returns `{ runId, steps: { <id>: { status, output } } }` | Separates a definition from one run's input, ahead of stored definitions in A4; the response mirrors the `steps.<id>.output` expression scope |
+| 2026-10-25 | Run history as an append-only event log per run plus a summary rebuilt from it by a pure projection; the runner reports through hooks and knows nothing of storage | Starts B1's event-sourced model while runs still execute in the request; the RunStore port keeps a Cassandra or Kafka adapter possible in horizon 2 |
+| 2026-10-25 | A run is recorded only once the engine accepts its definition and input; each run records its input with defaults and the stored version it came from | Rejected requests are not runs; the version link makes history meaningful as workflows change |
+| 2026-10-25 | Outputs over 256 KB are stored as a preview; all history is kept (no TTL) | Bounded event size without a second store yet; retention can be added when it matters |
+| 2026-10-25 | A canvas builder ships as a separate page next to the classic UI, storing plans through `/workflows` and keeping only drafts and layout in the browser | Built in parallel with phase A without touching engine code; one source of truth for definitions |

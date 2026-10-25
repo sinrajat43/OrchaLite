@@ -7,6 +7,8 @@ import { closeApp } from '../testing/http-server';
 import { Task, TaskContext } from '../tasks/task.interface';
 import { TaskHandler } from '../tasks/task-handler.decorator';
 import { WorkflowModule } from './workflow.module';
+import { RunsModule } from '../runs/runs.module';
+import { InMemoryRunStore } from '../runs/in-memory-run-store';
 
 abstract class TestTask implements Task {
   readonly paramsSchema = Type.Any();
@@ -43,9 +45,9 @@ class BoomTask extends TestTask {
 }
 
 // Tasks registered outside the engine's modules, the way any new task would be.
-// WorkflowModule alone, plus these, so no MongoDB connection is needed.
+// WorkflowModule alone, plus these, with run history in memory, so no MongoDB connection is needed.
 @Module({
-  imports: [WorkflowModule],
+  imports: [RunsModule.forRoot(new InMemoryRunStore()), WorkflowModule],
   providers: [OneTask, DoubleTask, NothingTask, BoomTask],
 })
 class TestAppModule {}
@@ -214,6 +216,105 @@ describe('HTTP API', () => {
       message: 'Task execution failed: kaput',
       stepId: 'b',
       task: 'boom',
+      runId: expect.stringMatching(/^[0-9a-f]{24}$/),
+    });
+  });
+
+  describe('run history', () => {
+    const getJson = async (path: string) => {
+      const response = await fetch(`${baseUrl}${path}`);
+      return { status: response.status, body: await response.json() };
+    };
+
+    it('records a successful run with its input and each step', async () => {
+      const response = await post(
+        {
+          name: 'history-ok',
+          input: { times: { type: 'integer', default: 2 } },
+          steps: [
+            { id: 'a', task: 'one', dependsOn: [] },
+            { id: 'b', task: 'double', params: { n: '{{ steps.a.output * input.times }}' }, dependsOn: ['a'] },
+            { id: 'off', task: 'one', when: '{{ false }}', dependsOn: ['a'] },
+          ],
+        },
+        {}
+      );
+      const { runId } = await response.json();
+      expect(runId).toMatch(/^[0-9a-f]{24}$/);
+
+      const run = await getJson(`/runs/${runId}`);
+      expect(run.status).toBe(200);
+      expect(run.body).toMatchObject({
+        id: runId,
+        name: 'history-ok',
+        status: 'SUCCEEDED',
+        input: { times: 2 },
+        steps: [
+          { id: 'a', task: 'one', status: 'SUCCEEDED' },
+          { id: 'b', task: 'double', status: 'SUCCEEDED' },
+          { id: 'off', task: 'one', status: 'SKIPPED', reason: 'when was false' },
+        ],
+      });
+      expect(run.body.workflow).toBeUndefined();
+      expect(Date.parse(run.body.steps[0].startedAt)).not.toBeNaN();
+
+      const events = await getJson(`/runs/${runId}/events`);
+      expect(events.body.map((e: any) => e.type)).toEqual([
+        'RunStarted', 'StepStarted', 'StepSucceeded', 'StepStarted', 'StepSucceeded', 'StepStarted', 'StepSkipped', 'RunSucceeded',
+      ]);
+      expect(events.body[4].data).toEqual({ stepId: 'b', output: 4 });
+    });
+
+    it('records a failed run with the failed and skipped steps', async () => {
+      const response = await post({
+        name: 'history-fails',
+        steps: [
+          { id: 'a', task: 'boom', dependsOn: [] },
+          { id: 'b', task: 'one', dependsOn: ['a'] },
+        ],
+      });
+      const { runId } = await response.json();
+      const run = await getJson(`/runs/${runId}`);
+      expect(run.body).toMatchObject({
+        status: 'FAILED',
+        failedStepId: 'a',
+        error: 'Task execution failed: kaput',
+        steps: [
+          { id: 'a', status: 'FAILED' },
+          { id: 'b', status: 'SKIPPED', reason: 'an earlier step failed' },
+        ],
+      });
+    });
+
+    it('does not record rejected definitions or input', async () => {
+      const cycle = await post({ name: 'history-rejected', steps: [{ id: 'a', task: 'one', dependsOn: ['a'] }] });
+      expect(cycle.status).toBe(400);
+      const input = await post({ name: 'history-rejected', input: { n: 'integer' }, steps: [{ id: 'a', task: 'one', dependsOn: [] }] }, { n: 'x' });
+      expect(input.status).toBe(400);
+      expect((await getJson('/runs?name=history-rejected')).body).toEqual([]);
+    });
+
+    it('lists runs newest first and filters them', async () => {
+      const all = await getJson('/runs');
+      expect(all.status).toBe(200);
+      const ids = all.body.map((r: any) => r.id);
+      expect(ids.length).toBeGreaterThan(2);
+      expect(ids).toEqual([...ids].sort().reverse());
+
+      const failed = await getJson('/runs?status=FAILED');
+      expect(failed.body.length).toBeGreaterThan(0);
+      expect(failed.body.every((r: any) => r.status === 'FAILED')).toBe(true);
+
+      const page = await getJson(`/runs?limit=1&before=${ids[0]}`);
+      expect(page.body.map((r: any) => r.id)).toEqual([ids[1]]);
+    });
+
+    it('rejects bad list queries and unknown runs', async () => {
+      expect((await getJson('/runs?status=NOPE')).status).toBe(400);
+      expect((await getJson('/runs?limit=0')).status).toBe(400);
+      expect((await getJson('/runs?before=xyz')).status).toBe(400);
+      expect((await getJson('/runs/0123456789abcdef01234567')).status).toBe(404);
+      expect((await getJson('/runs/0123456789abcdef01234567/events')).status).toBe(404);
     });
   });
 });
