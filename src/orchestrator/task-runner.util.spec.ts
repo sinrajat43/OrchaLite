@@ -1,8 +1,8 @@
-import { runWorkflow, RunInputError } from './task-runner.util';
+import { MAX_FOR_EACH_ITEMS, runWorkflow, RunInputError } from './task-runner.util';
 import { validateWorkflow, WorkflowDefinition, WorkflowDefinitionError, WorkflowStep } from './workflow-definition';
 import { Task, TaskContext, TaskExecutionError } from '../tasks/task.interface';
 import { Type } from '@sinclair/typebox';
-import { fakeTask, silentLogger } from '../testing/task-context';
+import { connectionsOf, fakeTask, silentLogger } from '../testing/task-context';
 
 // A task with a real schema, to check validation of params
 const typed: Task = {
@@ -18,12 +18,13 @@ const typed: Task = {
 const lookup = (tasks: Record<string, Task>) => new Map(Object.entries(tasks));
 const quiet = { createLogger: () => silentLogger };
 
-const step = (id: string, task: string, dependsOn: string[] = [], params?: any): WorkflowStep => ({
-  id,
-  task,
-  params,
-  dependsOn,
-});
+const step = (
+  id: string,
+  task: string,
+  dependsOn: string[] = [],
+  params?: any,
+  control: Pick<WorkflowStep, 'when' | 'forEach'> = {}
+): WorkflowStep => ({ id, task, params, dependsOn, ...control });
 
 const workflow = (steps: WorkflowStep[], input?: WorkflowDefinition['input']): WorkflowDefinition => ({
   name: 'test',
@@ -140,6 +141,34 @@ describe('validateWorkflow', () => {
     expect(issuesOf(() => validateWorkflow(workflow([step('a', 'typed', [], { url: 'http://forbidden' })]), lookup({ typed })))).toEqual([
       'Step "a" params.url is forbidden',
     ]);
+  });
+
+  it('requires when and forEach to be single expressions', () => {
+    expect(
+      issuesOf(() => validate([step('a', 't', [], {}, { when: 'true' }), step('b', 't', [], {}, { forEach: 'x {{ input }}' })]))
+    ).toEqual([
+      'Step "a" when must be a single {{ ... }} expression',
+      'Step "b" forEach must be a single {{ ... }} expression',
+    ]);
+  });
+
+  it('checks the references in when and forEach like params', () => {
+    expect(
+      issuesOf(() => validate([step('a', 't'), step('b', 't', [], {}, { when: '{{ steps.a.output }}', forEach: '{{ input.list }}' })]))
+    ).toEqual([
+      'Step "b" when references step "a", which it does not depend on',
+      'Step "b" forEach references undeclared input "list"',
+    ]);
+  });
+
+  it('lets only forEach steps read item and index', () => {
+    expect(() =>
+      validate([step('a', 't', [], { url: '{{ item.url }}', n: '{{ index }}' }, { forEach: '{{ input.list }}' })], { list: 'array' })
+    ).not.toThrow();
+    expect(issuesOf(() => validate([step('a', 't', [], { url: '{{ item.url }}' })]))).toEqual([
+      'Step "a" params.url: unknown name "item"; expressions start from input, steps',
+    ]);
+    expect(issuesOf(() => validate([step('a', 't', [], {}, { forEach: '{{ item }}' })]))[0]).toContain('unknown name "item"');
   });
 
   it('rejects unknown input types and invalid input schemas', () => {
@@ -299,6 +328,91 @@ describe('runWorkflow', () => {
     });
   });
 
+  it('skips a step whose when is false, and everything downstream of it', async () => {
+    const execute = jest.fn(async ({ params }: TaskContext) => params);
+    const t = fakeTask(execute);
+
+    const results = await runWorkflow(
+      workflow(
+        [
+          step('a', 't', [], { v: 1 }),
+          step('b', 't', ['a'], { v: 2 }, { when: '{{ steps.a.output.v > input.min }}' }),
+          step('c', 't', ['b']),
+          step('d', 't', ['a'], { v: 4 }, { when: '{{ steps.a.output.v = 1 }}' }),
+        ],
+        { min: 'number' }
+      ),
+      lookup({ t }),
+      { ...quiet, input: { min: 5 } }
+    );
+
+    expect(results.steps).toEqual({
+      a: { status: 'succeeded', output: { v: 1 } },
+      b: { status: 'skipped', reason: 'when was false' },
+      c: { status: 'skipped', reason: 'dependency "b" was skipped' },
+      d: { status: 'succeeded', output: { v: 4 } },
+    });
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
+
+  it('runs a forEach step once per item, in order, with item, index and a key per item', async () => {
+    const execute = jest.fn(async ({ params }: TaskContext) => params);
+
+    const results = await runWorkflow(
+      workflow(
+        [step('a', 't', [], { url: '{{ item }}', n: '{{ index }}', base: '{{ input.base }}' }, { forEach: '{{ input.urls }}' })],
+        { urls: 'array', base: 'string' }
+      ),
+      lookup({ t: fakeTask(execute) }),
+      { ...quiet, runId: 'r', input: { urls: ['x', 'y'], base: 'b' } }
+    );
+
+    expect(results.steps.a).toEqual({
+      status: 'succeeded',
+      iterations: 2,
+      output: [{ url: 'x', n: 0, base: 'b' }, { url: 'y', n: 1, base: 'b' }],
+    });
+    const keys = (execute.mock.calls as unknown as [TaskContext][]).map(([ctx]) => ctx.idempotencyKey);
+    expect(keys).toEqual(['r:a:0', 'r:a:1']);
+  });
+
+  it('treats a single forEach value as one item and no value as none', async () => {
+    const run = (forEach: string) =>
+      runWorkflow(workflow([step('a', 't', [], { v: '{{ item }}' }, { forEach })]), anyTasks, quiet);
+
+    expect((await run('{{ {"x": 1} }}')).steps.a).toMatchObject({ iterations: 1, output: [{ v: { x: 1 } }] });
+    expect((await run('{{ [1, 2][$ > 5] }}')).steps.a).toEqual({ status: 'succeeded', iterations: 0, output: [] });
+  });
+
+  it('names the item that failed, and bounds forEach', async () => {
+    const tasks = lookup({
+      t: fakeTask(async ({ params }: TaskContext<{ v: number }>) => {
+        if (params.v === 2) throw new Error('two');
+        return params.v;
+      }),
+    });
+
+    await expect(
+      runWorkflow(workflow([step('a', 't', [], { v: '{{ item }}' }, { forEach: '{{ [1, 2, 3] }}' })]), tasks, quiet)
+    ).rejects.toMatchObject({ message: 'Task execution failed [item 1]: two' });
+
+    await expect(
+      runWorkflow(workflow([step('a', 't', [], {}, { forEach: `{{ [1..${MAX_FOR_EACH_ITEMS + 1}] }}` })]), anyTasks, quiet)
+    ).rejects.toMatchObject({ message: `forEach produced ${MAX_FOR_EACH_ITEMS + 1} items; the limit is ${MAX_FOR_EACH_ITEMS}` });
+  });
+
+  it('hands tasks the connections, and fails clearly without them', async () => {
+    const github = { name: 'github', type: 'http' as const, baseUrl: 'https://api.github.com', headers: { a: 'b' }, query: {} };
+    const t = fakeTask(async ({ connections }) => connections.get('github'));
+
+    const results = await runWorkflow(workflow([step('a', 't')]), lookup({ t }), { ...quiet, connections: connectionsOf(github) });
+    expect(results.steps.a.output).toEqual(github);
+
+    await expect(runWorkflow(workflow([step('a', 't')]), lookup({ t }), quiet)).rejects.toMatchObject({
+      message: 'Task execution failed: Connection "github" is not available: no connections are configured',
+    });
+  });
+
   it('hands each step a context for its first attempt', async () => {
     const execute = jest.fn(async () => 1);
     const contexts: string[] = [];
@@ -324,5 +438,24 @@ describe('runWorkflow', () => {
     const second = await runWorkflow(workflow([step('a', 't')]), anyTasks, quiet);
 
     expect(first.runId).not.toBe(second.runId);
+  });
+});
+
+describe('formatSchemaErrors', () => {
+  it('reports a failed anyOf once, and lists the values an enum allows', () => {
+    const { formatSchemaErrors, validatorFor } = jest.requireActual('./schema-validator');
+    const validate = validatorFor({
+      type: 'object',
+      properties: {
+        method: { type: 'string', enum: ['GET', 'POST'] },
+        docs: { anyOf: [{ type: 'object' }, { type: 'array' }] },
+      },
+    });
+
+    validate({ method: 'FETCH', docs: 1 });
+    expect(formatSchemaErrors(validate.errors, 'params')).toEqual([
+      'params.method must be equal to one of the allowed values: GET, POST',
+      'params.docs must match a schema in anyOf',
+    ]);
   });
 });

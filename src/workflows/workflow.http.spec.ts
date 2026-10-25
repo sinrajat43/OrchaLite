@@ -90,11 +90,13 @@ describe('HTTP API', () => {
     expect(response.status).toBe(200);
     const tasks = await response.json();
     expect(tasks.map((t: { name: string }) => t.name)).toEqual([
-      'boom', 'delay', 'double', 'filter', 'http.request', 'mongo.insert', 'nothing', 'notify.webhook', 'one', 'transform',
+      'boom', 'delay', 'double', 'filter', 'http.request', 'mongo.findOne', 'mongo.insert', 'mongo.upsert', 'nothing',
+      'notify.webhook', 'one', 'transform',
     ]);
     const http = tasks.find((t: { name: string }) => t.name === 'http.request');
     expect(http).toMatchObject({ version: 1, description: expect.any(String) });
-    expect(http.paramsSchema).toMatchObject({ type: 'object', required: ['url'], additionalProperties: false });
+    expect(http.paramsSchema).toMatchObject({ type: 'object', additionalProperties: false });
+    expect(Object.keys(http.paramsSchema.properties)).toEqual(expect.arrayContaining(['url', 'connection', 'method']));
     expect(http.outputSchema.properties).toHaveProperty('status');
   });
 

@@ -24,8 +24,13 @@ export function validatorFor(schema: object): ValidateFunction {
  * Turns Ajv errors into messages such as "input.org must be string"
  */
 export function formatSchemaErrors(errors: ErrorObject[] | null | undefined, prefix: string): string[] {
-  return (errors ?? []).map(error => {
-    const at = error.instancePath.replace(/\//g, '.');
-    return `${prefix}${at} ${error.message}`;
-  });
+  const failedAnyOf = new Set(errors?.filter(e => e.keyword === 'anyOf').map(e => e.instancePath));
+  return (errors ?? [])
+    // Each failed branch of an anyOf reports its own error; the anyOf error alone says enough
+    .filter(error => !(failedAnyOf.has(error.instancePath) && error.schemaPath.includes('/anyOf/')))
+    .map(error => {
+      const at = error.instancePath.replace(/\//g, '.');
+      const allowed = error.keyword === 'enum' ? `: ${(error.params.allowedValues as unknown[]).join(', ')}` : '';
+      return `${prefix}${at} ${error.message}${allowed}`;
+    });
 }

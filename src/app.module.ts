@@ -1,5 +1,5 @@
 import { Module, OnApplicationShutdown, OnModuleInit } from '@nestjs/common';
-import { WorkflowModule } from './workflows/workflow.module';
+import { ApiModule } from './api.module';
 import mongoose from 'mongoose';
 import * as dotenv from 'dotenv';
 
@@ -24,7 +24,7 @@ function getConnectionString(): string {
 }
 
 @Module({
-  imports: [WorkflowModule],
+  imports: [ApiModule],
 })
 export class AppModule implements OnModuleInit, OnApplicationShutdown {
   // Tasks use models on the default mongoose connection, so that is the one we open

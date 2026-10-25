@@ -13,6 +13,10 @@ export interface WorkflowStep {
   /** May contain {{ ... }} expressions over input and steps.<id>.output */
   params?: Record<string, unknown>;
   dependsOn: string[];
+  /** {{ ... }} condition; when false the step and everything downstream of it is skipped */
+  when?: string;
+  /** {{ ... }} list; the step runs once per item, and its params can read item and index */
+  forEach?: string;
 }
 
 export interface WorkflowDefinition {
@@ -25,6 +29,8 @@ export interface WorkflowDefinition {
 export interface CompiledStep {
   step: WorkflowStep;
   params: Template;
+  when?: Template;
+  forEach?: Template;
   /** Every step this one depends on, directly or not */
   upstream: Set<string>;
 }
@@ -173,8 +179,25 @@ export function validateWorkflow(definition: WorkflowDefinition, tasks: TaskLook
       issues.push(...checkParams(task, step.params ?? {}, params.expressions.map(e => e.pointer)).map(issue => `${where} ${issue}`));
     }
 
-    for (const { expr, path } of params.expressions) {
-      const refs = findReferences(expr, path);
+    // when and forEach are each a single expression, evaluated once before the step runs
+    const control = (['when', 'forEach'] as const).map(field => {
+      if (step[field] === undefined) return undefined;
+      const compiled = compileTemplate(step[field], field);
+      issues.push(...compiled.issues.map(issue => `${where} ${issue}`));
+      if (compiled.issues.length === 0 && compiled.template.kind !== 'expression') {
+        issues.push(`${where} ${field} must be a single {{ ... }} expression`);
+      }
+      return compiled;
+    });
+
+    // Only a forEach step's params can read the current item
+    const located = [
+      ...params.expressions.map(e => ({ ...e, rootNames: step.forEach !== undefined ? ['item', 'index'] : [] })),
+      ...control.flatMap(c => c?.expressions ?? []).map(e => ({ ...e, rootNames: [] as string[] })),
+    ];
+
+    for (const { expr, path, rootNames } of located) {
+      const refs = findReferences(expr, path, rootNames);
       issues.push(...refs.issues.map(issue => `${where} ${issue}`));
       for (const id of refs.steps) {
         if (!byId.has(id)) issues.push(`${where} ${path} references unknown step "${id}"`);
@@ -185,7 +208,7 @@ export function validateWorkflow(definition: WorkflowDefinition, tasks: TaskLook
       }
     }
 
-    return { step, params: params.template, upstream };
+    return { step, params: params.template, when: control[0]?.template, forEach: control[1]?.template, upstream };
   });
 
   if (issues.length > 0) {

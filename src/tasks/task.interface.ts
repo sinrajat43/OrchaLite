@@ -3,6 +3,21 @@ import { TSchema } from '@sinclair/typebox';
 
 export type TaskLogger = Pick<LoggerService, 'log' | 'warn' | 'error' | 'debug'>;
 
+/** Named credentials for HTTP calls, decrypted only when a step asks for them */
+export interface HttpConnection {
+  name: string;
+  type: 'http';
+  /** Credentials are only ever sent to URLs under this one */
+  baseUrl: string;
+  headers: Record<string, string>;
+  query: Record<string, string>;
+}
+
+export interface ConnectionLookup {
+  /** @throws Error if there is no connection with this name */
+  get(name: string): Promise<HttpConnection>;
+}
+
 /**
  * Everything the engine hands a task for one execution of one step
  * @template TParams - Type of the step's params
@@ -18,6 +33,8 @@ export interface TaskContext<TParams = unknown> {
   idempotencyKey: string;
   /** Tagged with the run id and step id */
   logger: TaskLogger;
+  /** Named credentials; definitions refer to them by name and never hold secrets */
+  connections: ConnectionLookup;
 }
 
 /**

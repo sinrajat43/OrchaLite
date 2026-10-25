@@ -6,16 +6,17 @@ Where the project is heading: [objective and roadmap](docs/objective.md) · [arc
 
 ## Features
 
-- **DAG-based Workflow Execution**: Define workflows as a series of dependent tasks
-- **Type-safe Task System**: Strongly typed task inputs, outputs, and parameters
-- **Extensible Task Registry**: Easily add new tasks to the system
-- **MongoDB Integration**: Persistent storage of workflow results
-- **Input Validation**: Built-in validation for workflow definitions
-- **Error Handling**: Comprehensive error handling and logging
+- **Declarative workflows**: JSON definitions of steps and dependencies, run as a DAG
+- **Expressions**: JSONata in `{{ ... }}` wires run input and earlier outputs into params
+- **Control flow**: `when` to skip steps, `forEach` to run a step per item
+- **Generic tasks**: HTTP, transform, filter, MongoDB and webhook primitives, discovered as plugins
+- **Validation up front**: graph, expressions, references and params schemas are checked before anything runs
+- **Stored, versioned definitions** and **encrypted connections** for credentials
+- **Web UI**: edit, graph, run, store, and watch notifications arrive
 
 ## Prerequisites
 
-- Node.js (v14 or higher)
+- Node.js 18 or higher
 - MongoDB (local or Atlas)
 
 ## Installation
@@ -38,6 +39,10 @@ cp .env.example .env
 Create a `.env` file in the root directory with the following variables:
 
 ```env
+# Encryption key for connections (named credentials); without it /connections is disabled
+# Generate one with: openssl rand -base64 32
+ORCHALITE_SECRET_KEY=
+
 # MongoDB Configuration
 MONGODB_URI=mongodb://localhost:27017/orchalite
 # For MongoDB Atlas, use:
@@ -74,6 +79,10 @@ A workflow definition is JSON:
   - `task`: Name of the task to execute
   - `params`: Parameters for the task, which may contain expressions
   - `dependsOn`: Array of step IDs this step depends on
+  - `when` (optional): a `{{ ... }}` condition; when false, the step and
+    everything downstream of it is skipped
+  - `forEach` (optional): a `{{ ... }}` list; the step runs once per item, and
+    its params can read `item` and `index`. Its output is the list of outputs.
 
 ### Expressions
 
@@ -94,52 +103,36 @@ A definition is checked before any step runs. Expressions must parse, may only
 read steps the step depends on (directly or indirectly), and may only read
 declared input.
 
-### Example Workflow
-
-The GitHub pipeline, built from generic tasks only. This and the other examples
-in the web UI live in [`public/examples.json`](public/examples.json) and are
-run end to end by the test suite.
+### Control flow
 
 ```json
-{
-  "name": "popular-repos",
-  "input": {
-    "org": { "type": "string", "pattern": "^[A-Za-z0-9-]+$" },
-    "minStars": { "type": "integer", "minimum": 0, "default": 1000 }
-  },
-  "steps": [
-    {
-      "id": "fetch",
-      "task": "http.request",
-      "params": {
-        "url": "https://api.github.com/search/repositories",
-        "query": { "q": "org:{{ input.org }}", "sort": "stars", "order": "desc", "per_page": 100 }
-      },
-      "dependsOn": []
-    },
-    {
-      "id": "popular",
-      "task": "filter",
-      "params": {
-        "items": "{{ steps.fetch.output.body.items }}",
-        "where": "stargazers_count >= $minStars",
-        "vars": { "minStars": "{{ input.minStars }}" }
-      },
-      "dependsOn": ["fetch"]
-    },
-    {
-      "id": "save",
-      "task": "mongo.insert",
-      "params": {
-        "collection": "repos",
-        "documents": { "org": "{{ input.org }}", "repos": "{{ steps.popular.output }}" },
-        "timestampField": "timestamp"
-      },
-      "dependsOn": ["popular"]
-    }
-  ]
-}
+{ "id": "check", "task": "http.request", "forEach": "{{ input.endpoints }}",
+  "params": { "url": "{{ item }}", "throwOnError": false }, "dependsOn": [] },
+{ "id": "down", "task": "filter",
+  "params": { "items": "{{ steps.check.output }}", "where": "ok = false" }, "dependsOn": ["check"] },
+{ "id": "alert", "task": "notify.webhook", "when": "{{ $count(steps.down.output) > 0 }}",
+  "params": { "url": "{{ input.webhookUrl }}", "payload": { "text": "{{ $join(steps.down.output.url, ', ') }} down" } },
+  "dependsOn": ["down"] }
 ```
+
+`forEach` runs items one at a time and is capped at 1,000 items; each item gets
+its own idempotency key (`runId:stepId:index`). A skipped step's result says
+why: `when was false`, or `dependency "x" was skipped`.
+
+### Example workflows
+
+[`public/examples.json`](public/examples.json) holds the examples offered in
+the web UI; an end-to-end test runs each of them.
+
+| Example | Shows |
+| --- | --- |
+| `uptime-alert` | `forEach` over endpoints, `filter`, a `when`-guarded notification |
+| `release-watcher` | Reads the last seen release from MongoDB, notifies only on a change, then records it |
+| `popular-repos` | Search, filter, reshape and store, with primitives only |
+| `branching-example` | Two steps reading one upstream output |
+| three invalid ones | What submit-time validation catches |
+
+The uptime and release examples notify the built-in [webhook inbox](#webhook-inbox).
 
 ## Available Tasks
 
@@ -150,11 +143,13 @@ runs), so a typo in a param name or a wrong type is rejected up front.
 
 | Task | Does | Key params | Output |
 | --- | --- | --- | --- |
-| `http.request` | Calls an HTTP endpoint | `url`, `method`, `query`, `headers`, `body`, `timeoutMs`, `throwOnError` | `{ ok, status, headers, body, durationMs, error? }` |
+| `http.request` | Calls an HTTP endpoint | `url`, `connection`, `method`, `query`, `headers`, `body`, `timeoutMs`, `throwOnError` | `{ url, ok, status, headers, body, durationMs, error? }` |
 | `transform` | Returns `value` once its expressions are resolved, to reshape data | `value` | the value |
 | `filter` | Keeps items for which a JSONata condition holds | `items`, `where` (per item, reads `vars` as `$name`), `vars` | the kept items |
 | `mongo.insert` | Inserts documents into a collection | `collection`, `documents`, `timestampField` | `{ insertedCount }` |
-| `notify.webhook` | POSTs JSON, failing unless the answer is 2xx | `url`, `payload`, `headers` | `{ status }` |
+| `mongo.findOne` | Reads one document by field equality | `collection`, `filter` | the document without `_id`, or `null` |
+| `mongo.upsert` | Updates the document matching a filter, creating it if missing | `collection`, `filter`, `set`, `timestampField` | `{ created, modified }` |
+| `notify.webhook` | POSTs JSON, failing unless the answer is 2xx | `url`, `connection`, `payload`, `headers` | `{ status }` |
 | `delay` | Waits, in process, up to 60s | `ms` | `{ waitedMs }` |
 
 `http.request` fails the step on a network error or a non-2xx status. With
@@ -163,6 +158,32 @@ health check.
 
 `filter`'s `where` is code, so it may not contain `{{ ... }}`: splicing data
 into it would let the data change the condition. Pass values in through `vars`.
+For the same reason, MongoDB filters are equality only: field names cannot
+start with `$` and values are scalars, so data cannot become an operator.
+
+## Connections
+
+A connection holds credentials for HTTP calls, so definitions never contain
+secrets. Its headers and query params are encrypted with AES-256-GCM using
+`ORCHALITE_SECRET_KEY`, bound to the connection's name, and never returned by
+the API.
+
+```bash
+curl -X PUT localhost:3000/connections/github -H 'Content-Type: application/json' \
+  -d '{ "type": "http", "baseUrl": "https://api.github.com", "headers": { "Authorization": "Bearer <token>" } }'
+```
+
+A step then uses `"connection": "github"` with a relative `url` such as
+`/repos/nestjs/nest/releases/latest`. The credentials are only sent to URLs
+under the connection's `baseUrl`; pointing an absolute `url` elsewhere fails the
+step. For a webhook whose URL is itself the secret (Slack), store the URL as the
+`baseUrl` and give `notify.webhook` only the connection.
+
+## Webhook inbox
+
+`POST /inbox/<channel>` records any JSON payload in memory (the latest 100), and
+`GET /inbox` lists them. It is a local stand-in for Slack or similar, so the
+alerting examples can be tried without an account; the web UI shows it.
 
 ## Web UI
 
@@ -170,7 +191,10 @@ With the app running, open http://localhost:3000 for a single-page UI (`public/i
 
 - Edit a workflow as JSON, or load one of the built-in examples
 - Give the run its input as JSON
-- See the steps drawn as a dependency graph, with problems (unknown steps or tasks, cycles) flagged as you type
+- Save the workflow as a new stored version, and load or run stored workflows
+- Add and delete connections (secrets are write-only)
+- Watch notifications arrive in the webhook inbox
+- See the steps drawn as a dependency graph, with problems (unknown steps or tasks, cycles) flagged as you type, `forEach` and `when` steps marked, and skipped steps greyed out after a run
 - Browse the task catalogue with each task's params and output schemas
 - Run it and inspect each step's output, or the error and the step that failed
 
@@ -199,14 +223,40 @@ Runs a workflow definition with the given input, inside the request.
 }
 ```
 
-**Response:** `201` with the run id and each step's status and output:
+**Response:** `201` with the run id and each step's result:
 
 ```json
-{ "runId": "…", "steps": { "step-id": { "status": "succeeded", "output": "…" } } }
+{ "runId": "…", "steps": {
+    "step-id": { "status": "succeeded", "output": "…" },
+    "each-step": { "status": "succeeded", "output": ["…"], "iterations": 1 },
+    "later": { "status": "skipped", "reason": "when was false" } } }
 ```
 
 `400` lists every problem with the definition (`Invalid workflow definition`)
 or the input (`Invalid run input`). `500` names the step that failed.
+
+### Stored workflows
+
+| Endpoint | Does |
+| --- | --- |
+| `POST /workflows` | Validates a definition and stores it as the next version of its `name`; resubmitting the latest unchanged returns that version (`created: false`) |
+| `GET /workflows` | Each name with its latest version and version count |
+| `GET /workflows/:name` | The latest version |
+| `GET /workflows/:name/versions`, `GET /workflows/:name/versions/:version` | History, and one version |
+| `POST /workflows/:name/runs` | Runs a stored version (`{ input, version? }`, latest by default) inside the request; the response adds `workflow: { name, version }` |
+
+Versions are immutable. A unique index on `(name, version)` settles concurrent
+saves: each reads the latest version and tries to claim the next, and a loser
+reads again.
+
+### Connections and inbox
+
+| Endpoint | Does |
+| --- | --- |
+| `PUT /connections/:name` | Creates or replaces `{ type: "http", baseUrl, headers?, query? }`; returns only the names of secret values |
+| `GET /connections` | Lists connections without secrets |
+| `DELETE /connections/:name` | Deletes one |
+| `POST /inbox/:channel`, `GET /inbox`, `DELETE /inbox` | The local webhook inbox |
 
 ## Project Structure
 
@@ -214,6 +264,10 @@ or the input (`Invalid run input`). `500` names the step that failed.
 src/
 ├── main.ts                 # Application entry point
 ├── app.module.ts           # Root module, MongoDB connection
+├── api.module.ts           # Every HTTP feature module
+├── definitions/            # /workflows: versioned definition store
+├── connections/            # /connections: SecretBox (AES-256-GCM), service
+├── inbox/                  # /inbox: local webhook target
 ├── workflows/              # HTTP API
 │   ├── workflow.controller.ts    # POST /workflow/run
 │   ├── tasks.controller.ts       # GET /tasks
@@ -273,26 +327,18 @@ The context also carries an abort `signal`, the `attempt` number and an
 schema cannot express, implement `validate(params)`; it runs at submit time on
 the params as written.
 
-## Error Handling
+## Errors
 
-The system includes comprehensive error handling:
-- Input validation errors
-- Task execution errors
-- Dependency resolution errors
-- Database errors
-- API errors
+- `400 Invalid workflow definition` lists every problem with a definition at once
+- `400 Invalid run input` lists every problem with the input
+- `500` names the step that failed (`stepId`, `task`) and why
 
-All errors are logged and propagated appropriately.
+## What comes next
 
-## Future Enhancements
-
-Planned features:
-- Workflow status tracking
-- Task timeout handling
-- Retry mechanisms
-- Workflow versioning
-- Result caching
-- Monitoring and metrics
+Runs still happen inside the HTTP request and are lost on a crash. Phase B of
+the [roadmap](docs/objective.md) makes them durable: persisted runs, a
+scheduler and workers with leases, retries and timeouts, parallelism, sagas,
+triggers, and observability.
 
 ## Contributing
 

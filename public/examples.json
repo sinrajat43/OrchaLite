@@ -1,13 +1,171 @@
 [
   {
+    "label": "Uptime alert: check endpoints, notify the inbox when any is down",
+    "input": {
+      "endpoints": [
+        "https://api.github.com",
+        "https://example.com",
+        "http://127.0.0.1:9/"
+      ]
+    },
+    "workflow": {
+      "name": "uptime-alert",
+      "input": {
+        "endpoints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "webhookUrl": {
+          "type": "string",
+          "default": "http://localhost:3000/inbox/uptime"
+        }
+      },
+      "steps": [
+        {
+          "id": "check",
+          "task": "http.request",
+          "forEach": "{{ input.endpoints }}",
+          "params": {
+            "url": "{{ item }}",
+            "timeoutMs": 5000,
+            "throwOnError": false
+          },
+          "dependsOn": []
+        },
+        {
+          "id": "down",
+          "task": "filter",
+          "params": {
+            "items": "{{ steps.check.output }}",
+            "where": "ok = false"
+          },
+          "dependsOn": [
+            "check"
+          ]
+        },
+        {
+          "id": "alert",
+          "task": "notify.webhook",
+          "dependsOn": [
+            "down"
+          ],
+          "when": "{{ $count(steps.down.output) > 0 }}",
+          "params": {
+            "url": "{{ input.webhookUrl }}",
+            "payload": {
+              "text": "{{ $count(steps.down.output) & ' of ' & $count(input.endpoints) & ' endpoints down: ' & $join(steps.down.output.url, ', ') }}",
+              "down": "{{ steps.down.output.{ 'url': url, 'status': status, 'error': error }[] }}"
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "label": "Release watcher: notify the inbox when a repo publishes a new release",
+    "input": {
+      "repo": "nestjs/nest"
+    },
+    "workflow": {
+      "name": "release-watcher",
+      "input": {
+        "repo": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+        },
+        "apiUrl": {
+          "type": "string",
+          "default": "https://api.github.com"
+        },
+        "webhookUrl": {
+          "type": "string",
+          "default": "http://localhost:3000/inbox/releases"
+        }
+      },
+      "steps": [
+        {
+          "id": "latest",
+          "task": "http.request",
+          "params": {
+            "url": "{{ input.apiUrl }}/repos/{{ input.repo }}/releases/latest",
+            "headers": {
+              "Accept": "application/vnd.github+json"
+            }
+          },
+          "dependsOn": []
+        },
+        {
+          "id": "seen",
+          "task": "mongo.findOne",
+          "params": {
+            "collection": "release_watch",
+            "filter": {
+              "repo": "{{ input.repo }}"
+            }
+          },
+          "dependsOn": []
+        },
+        {
+          "id": "notify",
+          "task": "notify.webhook",
+          "dependsOn": [
+            "latest",
+            "seen"
+          ],
+          "when": "{{ $not(steps.seen.output.tag = steps.latest.output.body.tag_name) }}",
+          "params": {
+            "url": "{{ input.webhookUrl }}",
+            "payload": {
+              "text": "{{ input.repo & ' released ' & steps.latest.output.body.tag_name & ': ' & steps.latest.output.body.html_url }}",
+              "previous": "{{ steps.seen.output.tag }}"
+            }
+          }
+        },
+        {
+          "id": "record",
+          "task": "mongo.upsert",
+          "dependsOn": [
+            "notify"
+          ],
+          "params": {
+            "collection": "release_watch",
+            "filter": {
+              "repo": "{{ input.repo }}"
+            },
+            "set": {
+              "tag": "{{ steps.latest.output.body.tag_name }}"
+            },
+            "timestampField": "seenAt"
+          }
+        }
+      ]
+    }
+  },
+  {
     "label": "GitHub: popular repos of an org, stored in MongoDB",
-    "input": { "org": "nestjs", "minStars": 1000 },
+    "input": {
+      "org": "nestjs",
+      "minStars": 1000
+    },
     "workflow": {
       "name": "popular-repos",
       "input": {
-        "org": { "type": "string", "pattern": "^[A-Za-z0-9-]+$" },
-        "minStars": { "type": "integer", "minimum": 0, "default": 1000 },
-        "apiUrl": { "type": "string", "default": "https://api.github.com" }
+        "org": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9-]+$"
+        },
+        "minStars": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 1000
+        },
+        "apiUrl": {
+          "type": "string",
+          "default": "https://api.github.com"
+        }
       },
       "steps": [
         {
@@ -15,8 +173,15 @@
           "task": "http.request",
           "params": {
             "url": "{{ input.apiUrl }}/search/repositories",
-            "query": { "q": "org:{{ input.org }}", "sort": "stars", "order": "desc", "per_page": 100 },
-            "headers": { "Accept": "application/vnd.github+json" }
+            "query": {
+              "q": "org:{{ input.org }}",
+              "sort": "stars",
+              "order": "desc",
+              "per_page": 100
+            },
+            "headers": {
+              "Accept": "application/vnd.github+json"
+            }
           },
           "dependsOn": []
         },
@@ -26,9 +191,13 @@
           "params": {
             "items": "{{ steps.fetch.output.body.items }}",
             "where": "stargazers_count >= $minStars",
-            "vars": { "minStars": "{{ input.minStars }}" }
+            "vars": {
+              "minStars": "{{ input.minStars }}"
+            }
           },
-          "dependsOn": ["fetch"]
+          "dependsOn": [
+            "fetch"
+          ]
         },
         {
           "id": "summary",
@@ -36,48 +205,77 @@
           "params": {
             "value": "{{ steps.popular.output.{ 'name': full_name, 'stars': stargazers_count, 'language': language }[] }}"
           },
-          "dependsOn": ["popular"]
+          "dependsOn": [
+            "popular"
+          ]
         },
         {
           "id": "save",
           "task": "mongo.insert",
           "params": {
             "collection": "repos",
-            "documents": { "org": "{{ input.org }}", "repos": "{{ steps.summary.output }}" },
+            "documents": {
+              "org": "{{ input.org }}",
+              "repos": "{{ steps.summary.output }}"
+            },
             "timestampField": "timestamp"
           },
-          "dependsOn": ["summary"]
+          "dependsOn": [
+            "summary"
+          ]
         }
       ]
     }
   },
   {
     "label": "GitHub: two filters from one fetch (nothing stored)",
-    "input": { "org": "facebook" },
+    "input": {
+      "org": "facebook"
+    },
     "workflow": {
       "name": "branching-example",
-      "input": { "org": { "type": "string", "pattern": "^[A-Za-z0-9-]+$" } },
+      "input": {
+        "org": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9-]+$"
+        }
+      },
       "steps": [
         {
           "id": "fetch",
           "task": "http.request",
           "params": {
             "url": "https://api.github.com/search/repositories",
-            "query": { "q": "org:{{ input.org }}", "sort": "stars", "order": "desc", "per_page": 100 }
+            "query": {
+              "q": "org:{{ input.org }}",
+              "sort": "stars",
+              "order": "desc",
+              "per_page": 100
+            }
           },
           "dependsOn": []
         },
         {
           "id": "popular",
           "task": "filter",
-          "params": { "items": "{{ steps.fetch.output.body.items }}", "where": "stargazers_count >= 10000" },
-          "dependsOn": ["fetch"]
+          "params": {
+            "items": "{{ steps.fetch.output.body.items }}",
+            "where": "stargazers_count >= 10000"
+          },
+          "dependsOn": [
+            "fetch"
+          ]
         },
         {
           "id": "huge",
           "task": "filter",
-          "params": { "items": "{{ steps.fetch.output.body.items }}", "where": "stargazers_count >= 50000" },
-          "dependsOn": ["fetch"]
+          "params": {
+            "items": "{{ steps.fetch.output.body.items }}",
+            "where": "stargazers_count >= 50000"
+          },
+          "dependsOn": [
+            "fetch"
+          ]
         }
       ]
     }
@@ -88,8 +286,22 @@
     "workflow": {
       "name": "undeclared-dependency",
       "steps": [
-        { "id": "a", "task": "transform", "params": { "value": 1 }, "dependsOn": [] },
-        { "id": "b", "task": "transform", "params": { "value": "{{ steps.a.output + 1 }}" }, "dependsOn": [] }
+        {
+          "id": "a",
+          "task": "transform",
+          "params": {
+            "value": 1
+          },
+          "dependsOn": []
+        },
+        {
+          "id": "b",
+          "task": "transform",
+          "params": {
+            "value": "{{ steps.a.output + 1 }}"
+          },
+          "dependsOn": []
+        }
       ]
     }
   },
@@ -99,7 +311,15 @@
     "workflow": {
       "name": "bad-params",
       "steps": [
-        { "id": "call", "task": "http.request", "params": { "method": "FETCH", "timeoutMs": 0 }, "dependsOn": [] }
+        {
+          "id": "call",
+          "task": "http.request",
+          "params": {
+            "method": "FETCH",
+            "timeoutMs": 0
+          },
+          "dependsOn": []
+        }
       ]
     }
   },
@@ -109,8 +329,26 @@
     "workflow": {
       "name": "cycle-example",
       "steps": [
-        { "id": "a", "task": "transform", "params": { "value": 1 }, "dependsOn": ["b"] },
-        { "id": "b", "task": "transform", "params": { "value": 2 }, "dependsOn": ["a"] }
+        {
+          "id": "a",
+          "task": "transform",
+          "params": {
+            "value": 1
+          },
+          "dependsOn": [
+            "b"
+          ]
+        },
+        {
+          "id": "b",
+          "task": "transform",
+          "params": {
+            "value": 2
+          },
+          "dependsOn": [
+            "a"
+          ]
+        }
       ]
     }
   }

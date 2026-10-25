@@ -134,6 +134,13 @@ function toPlain(value: unknown): unknown {
   return value;
 }
 
+/** JSONata's $boolean rules, so a condition means the same in a task as in an expression */
+export function isTruthy(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(isTruthy);
+  if (value && typeof value === 'object') return Object.keys(value).length > 0;
+  return Boolean(value);
+}
+
 const interpolate = (value: unknown): string => {
   if (value === undefined || value === null) return '';
   return typeof value === 'string' ? value : JSON.stringify(value);

@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OrchaLite</title>
+<link rel="icon" href="data:,">
 <style>
   :root {
     --bg: #f6f7f9;
@@ -152,6 +153,20 @@
   .node.done rect { stroke: var(--ok); fill: var(--ok-bg); }
   .node.failed rect { stroke: var(--bad); fill: var(--bad-bg); }
   .node.invalid rect { stroke: var(--bad); stroke-dasharray: 5 4; }
+  .node.skipped rect { stroke: var(--muted); stroke-dasharray: 2 3; opacity: 0.7; }
+  .node .badge { fill: var(--accent); font: 600 10px var(--mono); }
+  .list { display: grid; gap: 6px; }
+  .list .item { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: space-between; }
+  .list .item > span { flex: 1 1 0; min-width: 0; overflow-wrap: anywhere; }
+  .list code { font: 12px var(--mono); font-weight: 600; }
+  .status { font: 11px var(--mono); padding: 1px 6px; border-radius: 999px; }
+  .status.succeeded { background: var(--ok-bg); color: var(--ok); }
+  .status.skipped { background: var(--code-bg); color: var(--muted); }
+  input[type=text] {
+    font: 12.5px var(--mono); color: inherit; background: var(--code-bg);
+    border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; min-width: 0; flex: 1 1 140px;
+  }
+  .form { display: grid; gap: 8px; margin-top: 10px; }
   .edge { fill: none; stroke: var(--edge); stroke-width: 1.5; }
   .arrow { fill: var(--edge); }
   .banner {
@@ -216,8 +231,28 @@
       <ul class="issues" id="issues"></ul>
       <div class="row" style="margin-top: 12px">
         <button id="run" class="primary" type="button">Run workflow</button>
-        <span class="hint" id="runHint">Ctrl/Cmd + Enter</span>
+        <button id="save" type="button">Save as stored workflow</button>
+        <span class="hint" id="runHint">Ctrl/Cmd + Enter runs</span>
       </div>
+    </section>
+
+    <section>
+      <h2>Stored workflows</h2>
+      <div class="list" id="stored"><span class="hint">Loading…</span></div>
+    </section>
+
+    <section>
+      <h2>Connections</h2>
+      <p class="hint">Named credentials, encrypted at rest. A step refers to one with <code>"connection": "name"</code>; its secrets are only ever sent under its base URL.</p>
+      <div class="list" id="connections"><span class="hint">Loading…</span></div>
+      <form class="form" id="connectionForm">
+        <div class="row">
+          <input type="text" id="connName" placeholder="name, e.g. github" aria-label="Connection name" required>
+          <input type="text" id="connBase" placeholder="base URL, e.g. https://api.github.com" aria-label="Base URL" required>
+        </div>
+        <textarea id="connHeaders" class="small" spellcheck="false" aria-label="Secret headers as JSON">{ "Authorization": "Bearer …" }</textarea>
+        <div class="row"><button type="submit">Save connection</button><span class="hint" id="connHint"></span></div>
+      </form>
     </section>
 
     <section>
@@ -230,6 +265,15 @@
     <section>
       <h2>Step graph</h2>
       <div id="graph"></div>
+    </section>
+
+    <section>
+      <div class="row" style="justify-content: space-between">
+        <h2>Webhook inbox</h2>
+        <div class="row"><button id="inboxRefresh" type="button">Refresh</button><button id="inboxClear" type="button">Clear</button></div>
+      </div>
+      <p class="hint">Point <code>notify.webhook</code> at <code id="inboxUrl">/inbox/&lt;channel&gt;</code> to see notifications arrive here.</p>
+      <div class="list" id="inbox"></div>
     </section>
 
     <section>
@@ -248,7 +292,7 @@ const editor = $('editor');
 const inputEditor = $('inputEditor');
 
 let knownTasks = null; // null until loaded
-let stepStatus = {};   // step id -> 'done' | 'failed'
+let stepStatus = {};   // step id -> 'done' | 'skipped' | 'failed'
 
 function el(tag, props = {}, children = []) {
   const node = document.createElement(tag);
@@ -284,6 +328,8 @@ function readWorkflow() {
       id: step.id,
       task: typeof step.task === 'string' ? step.task : '',
       dependsOn: Array.isArray(step.dependsOn) ? step.dependsOn.filter(dep => typeof dep === 'string') : [],
+      when: typeof step.when === 'string',
+      forEach: typeof step.forEach === 'string',
     }));
 
   const issues = [];
@@ -423,6 +469,12 @@ function renderGraph({ steps, level, invalid }) {
     const taskText = svgEl('text', { x: 12, y: 38, class: 'task' });
     taskText.textContent = clip(step.task || '(no task)', 19);
     group.append(title, idText, taskText);
+    const badges = [step.forEach && 'each', step.when && 'when'].filter(Boolean).join(' · ');
+    if (badges) {
+      const badge = svgEl('text', { x: W - 8, y: 14, class: 'badge', 'text-anchor': 'end' });
+      badge.textContent = badges;
+      group.append(badge);
+    }
     svg.append(group);
   }
 
@@ -482,20 +534,32 @@ function renderValue(value) {
   return body;
 }
 
-function renderSuccess(steps, { steps: results }, ms) {
+function renderSuccess(steps, body, ms) {
+  const results = body.steps;
+  const ran = steps.filter(step => results[step.id]?.status === 'succeeded').length;
+  const skipped = steps.length - ran;
+  const where = body.workflow ? `${body.workflow.name} v${body.workflow.version}: ` : '';
   const host = $('results');
   host.replaceChildren(el('div', {
     className: 'banner ok',
-    textContent: `Completed ${steps.length} step${steps.length === 1 ? '' : 's'} in ${(ms / 1000).toFixed(1)}s.`,
+    textContent: `${where}ran ${ran} step${ran === 1 ? '' : 's'}${skipped ? `, skipped ${skipped}` : ''} in ${(ms / 1000).toFixed(1)}s.`,
   }));
   for (const step of steps) {
-    const value = results[step.id]?.output;
+    const result = results[step.id] ?? {};
+    const value = result.output;
+    const what = result.status === 'skipped'
+      ? result.reason
+      : `${result.iterations !== undefined ? `${result.iterations} iteration${result.iterations === 1 ? '' : 's'}, ` : ''}${describe(value)}`;
     const summary = el('summary', {}, [
       el('b', { textContent: step.id }),
       el('code', { textContent: step.task }),
-      el('span', { className: 'out', textContent: describe(value) }),
+      el('span', { className: `status ${result.status}`, textContent: result.status }),
+      el('span', { className: 'out', textContent: what }),
     ]);
-    host.append(el('details', { className: 'step' }, [summary, renderValue(value)]));
+    const body = result.status === 'skipped'
+      ? el('div', { className: 'body' }, el('span', { className: 'hint', textContent: `Skipped: ${result.reason}.` }))
+      : renderValue(value);
+    host.append(el('details', { className: 'step' }, [summary, body]));
   }
 }
 
@@ -526,7 +590,8 @@ function refresh() {
   return parsed;
 }
 
-async function run() {
+// Runs the editor's definition, or a stored workflow when given its name
+async function run(storedName) {
   const parsed = readWorkflow();
   if (parsed.blocking) return;
 
@@ -539,17 +604,23 @@ async function run() {
 
   const started = performance.now();
   try {
-    const response = await fetch('/workflow/run', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ definition: parsed.workflow, input: parsed.input }),
-    });
+    const response = storedName
+      ? await fetch(`/workflows/${encodeURIComponent(storedName)}/runs`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ input: parsed.input }),
+        })
+      : await fetch('/workflow/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ definition: parsed.workflow, input: parsed.input }),
+        });
     const text = await response.text();
     const body = text ? JSON.parse(text) : {};
     const ms = performance.now() - started;
 
     if (response.ok) {
-      for (const step of parsed.steps) stepStatus[step.id] = 'done';
+      for (const step of parsed.steps) stepStatus[step.id] = body.steps[step.id]?.status === 'skipped' ? 'skipped' : 'done';
       renderSuccess(parsed.steps, body, ms);
     } else {
       if (body.stepId) stepStatus[body.stepId] = 'failed';
@@ -561,12 +632,147 @@ async function run() {
     button.disabled = false;
     button.textContent = 'Run workflow';
     refresh();
+    loadInbox();
   }
 }
 
+// --- Stored workflows, connections, inbox -------------------------------
+
+async function api(method, path, body) {
+  const response = await fetch(path, {
+    method,
+    headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const text = await response.text();
+  return { ok: response.ok, status: response.status, body: text ? JSON.parse(text) : undefined };
+}
+
+const messageOf = body => [].concat(body?.errors ?? body?.message ?? 'Request failed').join('; ');
+
+async function saveWorkflow() {
+  const parsed = readWorkflow();
+  if (parsed.blocking || !parsed.workflow) return;
+  const { ok, status, body } = await api('POST', '/workflows', parsed.workflow);
+  if (ok) {
+    $('runHint').textContent = body.created
+      ? `Saved ${body.name} as version ${body.version}.`
+      : `Unchanged: ${body.name} is already version ${body.version}.`;
+    loadStored();
+  } else {
+    renderFailure(status, body, 0);
+  }
+}
+
+async function loadStored() {
+  const host = $('stored');
+  const { ok, body } = await api('GET', '/workflows').catch(() => ({ ok: false }));
+  if (!ok) {
+    host.replaceChildren(el('span', { className: 'hint', textContent: 'Could not load stored workflows (is MongoDB connected?).' }));
+    return;
+  }
+  if (!body.length) {
+    host.replaceChildren(el('span', { className: 'hint', textContent: 'None yet. Save the workflow in the editor to store version 1.' }));
+    return;
+  }
+  host.replaceChildren(...body.map(item => {
+    const load = el('button', { type: 'button', textContent: 'Load' });
+    load.addEventListener('click', () => loadStoredDefinition(item.name));
+    const runIt = el('button', { type: 'button', textContent: 'Run' });
+    runIt.addEventListener('click', async () => {
+      await loadStoredDefinition(item.name, true);
+      run(item.name);
+    });
+    return el('div', { className: 'item' }, [
+      el('span', {}, [el('code', { textContent: item.name }), document.createTextNode(` v${item.latestVersion} · ${item.versions} version${item.versions === 1 ? '' : 's'}`)]),
+      el('div', { className: 'row' }, [load, runIt]),
+    ]);
+  }));
+}
+
+// Puts a stored definition in the editor; keeps the run input unless asked to replace it
+async function loadStoredDefinition(name, keepInput = true) {
+  const { ok, body } = await api('GET', `/workflows/${encodeURIComponent(name)}`);
+  if (!ok) return;
+  editor.value = JSON.stringify(body.definition, null, 2);
+  if (!keepInput) inputEditor.value = '{}';
+  stepStatus = {};
+  $('runHint').textContent = `Loaded ${body.name} v${body.version}.`;
+  refresh();
+}
+
+async function loadConnections() {
+  const host = $('connections');
+  const { ok, body } = await api('GET', '/connections').catch(() => ({ ok: false }));
+  if (!ok) {
+    host.replaceChildren(el('span', { className: 'hint', textContent: 'Could not load connections (is MongoDB connected?).' }));
+    return;
+  }
+  if (!body.length) {
+    host.replaceChildren(el('span', { className: 'hint', textContent: 'No connections yet.' }));
+    return;
+  }
+  host.replaceChildren(...body.map(item => {
+    const remove = el('button', { type: 'button', textContent: 'Delete' });
+    remove.addEventListener('click', async () => {
+      await api('DELETE', `/connections/${encodeURIComponent(item.name)}`);
+      loadConnections();
+    });
+    const secrets = [...item.headerNames.map(n => `header ${n}`), ...item.queryNames.map(n => `query ${n}`)].join(', ') || 'no secrets';
+    return el('div', { className: 'item' }, [
+      el('span', {}, [el('code', { textContent: item.name }), document.createTextNode(` ${item.baseUrl} · ${secrets}`)]),
+      remove,
+    ]);
+  }));
+}
+
+async function saveConnection(event) {
+  event.preventDefault();
+  let headers;
+  try {
+    headers = $('connHeaders').value.trim() ? JSON.parse($('connHeaders').value) : {};
+  } catch (error) {
+    $('connHint').textContent = `Headers are not valid JSON: ${error.message}`;
+    return;
+  }
+  const name = $('connName').value.trim();
+  const { ok, body } = await api('PUT', `/connections/${encodeURIComponent(name)}`, {
+    type: 'http',
+    baseUrl: $('connBase').value.trim(),
+    headers,
+  });
+  $('connHint').textContent = ok ? `Saved ${body.name}; secrets are encrypted and never shown again.` : messageOf(body);
+  if (ok) {
+    $('connHeaders').value = '';
+    loadConnections();
+  }
+}
+
+async function loadInbox() {
+  const host = $('inbox');
+  const { ok, body } = await api('GET', '/inbox').catch(() => ({ ok: false }));
+  if (!ok) return;
+  if (!body.length) {
+    host.replaceChildren(el('span', { className: 'hint', textContent: 'Nothing received yet.' }));
+    return;
+  }
+  host.replaceChildren(...body.slice(0, 20).map(message => el('details', { className: 'step' }, [
+    el('summary', {}, [
+      el('b', { textContent: message.channel }),
+      el('code', { textContent: new Date(message.receivedAt).toLocaleTimeString() }),
+      el('span', { className: 'out', textContent: clip(String(message.payload?.text ?? JSON.stringify(message.payload)), 90) }),
+    ]),
+    el('div', { className: 'body' }, el('pre', { textContent: JSON.stringify(message.payload, null, 2) })),
+  ])));
+}
+
 function loadExample(index) {
+  // Examples notify this server's inbox, wherever it runs
+  const input = { ...(EXAMPLES[index].input ?? {}) };
+  if (EXAMPLES[index].workflow.input?.webhookUrl) input.webhookUrl = `${location.origin}/inbox/${EXAMPLES[index].workflow.name}`;
   editor.value = JSON.stringify(EXAMPLES[index].workflow, null, 2);
-  inputEditor.value = JSON.stringify(EXAMPLES[index].input ?? {}, null, 2);
+  inputEditor.value = JSON.stringify(input, null, 2);
+  $('runHint').textContent = 'Ctrl/Cmd + Enter runs';
   stepStatus = {};
   refresh();
 }
@@ -582,7 +788,18 @@ inputEditor.addEventListener('input', () => refresh());
 editor.addEventListener('keydown', event => {
   if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) run();
 });
-$('run').addEventListener('click', run);
+$('run').addEventListener('click', () => run());
+$('save').addEventListener('click', saveWorkflow);
+$('connectionForm').addEventListener('submit', saveConnection);
+$('inboxRefresh').addEventListener('click', loadInbox);
+$('inboxClear').addEventListener('click', async () => {
+  await api('DELETE', '/inbox');
+  loadInbox();
+});
+$('inboxUrl').textContent = `${location.origin}/inbox/<channel>`;
+loadStored();
+loadConnections();
+loadInbox();
 
 fetch('/examples.json')
   .then(response => response.json())

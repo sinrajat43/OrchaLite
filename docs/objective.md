@@ -207,7 +207,7 @@ decide what a persisted step record has to store.
   - Done when: the GitHub pipeline is expressed with primitives only and the
     three GitHub tasks are deleted.
 
-- [ ] **A4. Stored definitions, connections and control flow**
+- [x] **A4. Stored definitions, connections and control flow** (done 2026-10-25)
   - Build: `POST /workflows` to store a versioned definition; named
     connections for credentials, encrypted at rest; `when` (conditional step)
     and `forEach` (fan-out over a list).
@@ -333,4 +333,11 @@ Several of these come back in later horizons, noted on each item.
 | 2026-10-25 | `http.request` fails on a network error or non-2xx unless `throwOnError: false`, which reports it in the output | Failing is the safe default; the uptime alert needs "down" as data, not as a failed run |
 | 2026-10-25 | `delay` is in process and capped at 60 seconds | It holds the HTTP request open until runs leave the request in B1-B2, where it becomes durable |
 | 2026-10-25 | Example workflows live in `public/examples.json`; the UI loads them and an end-to-end test runs them against a fake GitHub and a throwaway MongoDB | The examples in the UI cannot drift from what the engine accepts |
+| 2026-10-25 | Definition versions are immutable rows claimed through a unique `(name, version)` index, retried on conflict; an unchanged resubmission returns the latest version | Optimistic concurrency without locks; a test removes the index and sees concurrent saves collide |
+| 2026-10-25 | Connections hold headers and query params encrypted with AES-256-GCM, keyed by `ORCHALITE_SECRET_KEY`, with the connection name as associated data | Authenticated encryption detects tampering, and the name binding stops a ciphertext being copied onto another connection. Key rotation is not built yet; each value records a key id so a wrong key fails clearly |
+| 2026-10-25 | A connection's credentials are only sent to URLs under its `baseUrl` | Otherwise a definition could point a stored credential at any host |
+| 2026-10-25 | `when` is evaluated once; a skipped step skips everything downstream of it | Simple and predictable; join rules such as "run if any dependency succeeded" can come later if a use case needs them |
+| 2026-10-25 | `forEach` runs items one at a time, capped at 1,000, each with its own idempotency key | Keeps A4 about control flow; parallel fan-out and fairness are B4 |
+| 2026-10-25 | `mongo.findOne` and `mongo.upsert` take equality-only filters | The release watcher needs to read and write state; equality filters keep expression data from becoming query operators |
+| 2026-10-25 | A local webhook inbox (`/inbox`) receives notifications | The alerting use cases can be tried and tested end to end without an external service |
 | 2026-10-25 | `POST /workflow/run` takes `{ definition, input }` and returns `{ runId, steps: { <id>: { status, output } } }` | Separates a definition from one run's input, ahead of stored definitions in A4; the response mirrors the `steps.<id>.output` expression scope |

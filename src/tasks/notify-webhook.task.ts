@@ -2,10 +2,12 @@ import axios from 'axios';
 import { Static, Type } from '@sinclair/typebox';
 import { Task, TaskContext } from './task.interface';
 import { TaskHandler } from './task-handler.decorator';
+import { ConnectionParam, requireUrlOrConnection, resolveTarget } from './http-connection';
 
 const NotifyWebhookParamsSchema = Type.Object(
   {
-    url: Type.String({ minLength: 1 }),
+    url: Type.Optional(Type.String({ minLength: 1, description: 'Webhook URL; may be left to the connection' })),
+    connection: ConnectionParam,
     payload: Type.Unknown({ description: 'Sent as the JSON body, for example { "text": "..." } for Slack' }),
     headers: Type.Optional(Type.Record(Type.String(), Type.String())),
     timeoutMs: Type.Optional(Type.Integer({ minimum: 1, maximum: 60_000, default: 10_000 })),
@@ -22,14 +24,22 @@ export class NotifyWebhookTask implements Task<NotifyWebhookParams, NotifyWebhoo
   readonly paramsSchema = NotifyWebhookParamsSchema;
   readonly outputSchema = NotifyWebhookOutputSchema;
 
-  async execute({ params, signal }: TaskContext<NotifyWebhookParams>): Promise<NotifyWebhookOutput> {
-    const { url, payload, headers, timeoutMs = 10_000 } = params;
+  validate(params: Record<string, unknown>): string[] {
+    return requireUrlOrConnection(params);
+  }
+
+  async execute(ctx: TaskContext<NotifyWebhookParams>): Promise<NotifyWebhookOutput> {
+    const { params, signal } = ctx;
+    const { payload, timeoutMs = 10_000 } = params;
+    // A webhook URL is often itself the secret (Slack), so errors name the connection instead
+    const shown = params.connection ? `connection "${params.connection}"` : params.url;
+    const { url, headers, query } = await resolveTarget(ctx, params.connection, params);
     try {
-      const response = await axios.post(url, payload ?? null, { headers, timeout: timeoutMs, signal });
+      const response = await axios.post(url, payload ?? null, { headers, params: query, timeout: timeoutMs, signal });
       return { status: response.status };
     } catch (error) {
       const status = axios.isAxiosError(error) && error.response ? `HTTP ${error.response.status}` : (error as Error).message;
-      throw new Error(`Webhook ${url} failed: ${status}`);
+      throw new Error(`Webhook ${shown} failed: ${status}`);
     }
   }
 }

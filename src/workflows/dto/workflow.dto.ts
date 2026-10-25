@@ -1,4 +1,4 @@
-import { IsString, IsArray, IsOptional, ValidateNested, ArrayMinSize, IsNotEmpty, IsObject, IsDefined } from 'class-validator';
+import { IsString, IsArray, IsOptional, ValidateNested, ArrayMinSize, IsNotEmpty, IsObject, IsDefined, Matches, IsInt, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class WorkflowStepDto {
@@ -18,11 +18,21 @@ export class WorkflowStepDto {
   @IsString({ each: true })
   @ArrayMinSize(0)
   dependsOn: string[];
+
+  @IsOptional()
+  @IsString()
+  when?: string;
+
+  @IsOptional()
+  @IsString()
+  forEach?: string;
 }
+
+export const WORKFLOW_NAME = /^[A-Za-z0-9_.-]+$/;
 
 export class WorkflowDefinitionDto {
   @IsString()
-  @IsNotEmpty()
+  @Matches(WORKFLOW_NAME, { message: 'name may only contain letters, digits, _, . and -' })
   name: string;
 
   @IsOptional()
@@ -45,4 +55,16 @@ export class RunWorkflowDto {
   @IsOptional()
   @IsObject()
   input?: Record<string, unknown>;
+}
+
+export class RunStoredWorkflowDto {
+  @IsOptional()
+  @IsObject()
+  input?: Record<string, unknown>;
+
+  /** Defaults to the latest version */
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  version?: number;
 }

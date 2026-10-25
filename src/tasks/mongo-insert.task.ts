@@ -2,10 +2,11 @@ import mongoose from 'mongoose';
 import { Static, Type } from '@sinclair/typebox';
 import { Task, TaskContext } from './task.interface';
 import { TaskHandler } from './task-handler.decorator';
+import { CollectionName } from './mongo-filter';
 
 const MongoInsertParamsSchema = Type.Object(
   {
-    collection: Type.String({ pattern: '^[A-Za-z0-9_-]+$', description: 'Letters, digits, _ and -' }),
+    collection: CollectionName,
     documents: Type.Union([Type.Object({}), Type.Array(Type.Object({}), { minItems: 1 })], {
       description: 'One document or a non-empty array of them',
     }),

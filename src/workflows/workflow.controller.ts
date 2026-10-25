@@ -9,6 +9,6 @@ export class WorkflowController {
 
   @Post('run')
   runWorkflow(@Body() dto: RunWorkflowDto): Promise<WorkflowResults> {
-    return this.workflowService.run(dto);
+    return this.workflowService.run(dto.definition, dto.input);
   }
 }

@@ -1,5 +1,6 @@
 import jsonata = require('jsonata');
 import { Static, Type } from '@sinclair/typebox';
+import { isTruthy } from '../expressions/template';
 import { Task, TaskContext } from './task.interface';
 import { TaskHandler } from './task-handler.decorator';
 
@@ -19,13 +20,6 @@ const FilterParamsSchema = Type.Object(
   { additionalProperties: false }
 );
 export type FilterParams = Static<typeof FilterParamsSchema>;
-
-/** JSONata's $boolean rules, so a condition means the same here as inside an expression */
-function truthy(value: unknown): boolean {
-  if (Array.isArray(value)) return value.some(truthy);
-  if (value && typeof value === 'object') return Object.keys(value).length > 0;
-  return Boolean(value);
-}
 
 @TaskHandler({ name: 'filter', version: 1, description: 'Keeps the items for which a JSONata condition holds' })
 export class FilterTask implements Task<FilterParams, unknown[]> {
@@ -51,7 +45,7 @@ export class FilterTask implements Task<FilterParams, unknown[]> {
     const condition = jsonata(params.where);
     const kept: unknown[] = [];
     for (const item of params.items) {
-      if (truthy(await condition.evaluate(item, params.vars))) kept.push(item);
+      if (isTruthy(await condition.evaluate(item, params.vars))) kept.push(item);
     }
     return kept;
   }
