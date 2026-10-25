@@ -1,10 +1,23 @@
-import { Task } from './task.interface';
 import axios from 'axios';
-import { Repo, FetchReposParams } from './types';
+import { Static, Type } from '@sinclair/typebox';
+import { Task, TaskContext } from './task.interface';
+import { TaskHandler } from './task-handler.decorator';
+import { Repo, RepoSchema } from './types';
 
-export const fetchRepos: Task<void, Repo[], FetchReposParams> = {
-  async execute(_input: void, params: FetchReposParams = {}): Promise<Repo[]> {
-    const { org = 'github', perPage = 100, page = 1 } = params;
+const FetchReposParamsSchema = Type.Object({
+  org: Type.Optional(Type.String({ pattern: '^[A-Za-z0-9-]+$', default: 'github' })),
+  perPage: Type.Optional(Type.Integer({ minimum: 1, maximum: 100, default: 100 })),
+  page: Type.Optional(Type.Integer({ minimum: 1, default: 1 })),
+});
+export type FetchReposParams = Static<typeof FetchReposParamsSchema>;
+
+@TaskHandler({ name: 'fetchRepos', version: 1 })
+export class FetchReposTask implements Task<FetchReposParams, Repo[]> {
+  readonly paramsSchema = FetchReposParamsSchema;
+  readonly outputSchema = Type.Array(RepoSchema);
+
+  async execute({ params, signal }: TaskContext<FetchReposParams>): Promise<Repo[]> {
+    const { org = 'github', perPage = 100, page = 1 } = params ?? {};
 
     // The org goes into a search query, so reject anything that could add qualifiers
     if (!/^[A-Za-z0-9-]+$/.test(org)) {
@@ -28,7 +41,8 @@ export const fetchRepos: Task<void, Repo[], FetchReposParams> = {
             ...(process.env.GITHUB_TOKEN
               ? { 'Authorization': `token ${process.env.GITHUB_TOKEN}` }
               : {})
-          }
+          },
+          signal
         }
       );
 
@@ -40,5 +54,4 @@ export const fetchRepos: Task<void, Repo[], FetchReposParams> = {
       throw error;
     }
   }
-};
-  
+}

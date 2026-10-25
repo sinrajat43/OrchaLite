@@ -1,4 +1,5 @@
-import { filterRepos } from './filterRepos.task';
+import { contextFor } from '../testing/task-context';
+import { FilterReposTask } from './filterRepos.task';
 import { Repo } from './types';
 
 const repos: Repo[] = [
@@ -8,18 +9,19 @@ const repos: Repo[] = [
   { id: 4, name: 'many', stargazers_count: 50000 },
 ];
 
+const filterRepos = new FilterReposTask();
 const names = (result: Repo[]) => result.map(repo => repo.name);
 
 describe('filterRepos', () => {
   it('defaults to a 1000 star minimum, inclusive', async () => {
-    expect(names(await filterRepos.execute(repos))).toEqual(['edge', 'many']);
+    expect(names(await filterRepos.execute(contextFor({}, repos)))).toEqual(['edge', 'many']);
   });
 
   it('uses the given minimum', async () => {
-    expect(names(await filterRepos.execute(repos, { minStars: 5000 }))).toEqual(['many']);
+    expect(names(await filterRepos.execute(contextFor({ minStars: 5000 }, repos)))).toEqual(['many']);
   });
 
   it('treats a minimum of 0 as "keep everything"', async () => {
-    expect(await filterRepos.execute(repos, { minStars: 0 })).toHaveLength(4);
+    expect(await filterRepos.execute(contextFor({ minStars: 0 }, repos))).toHaveLength(4);
   });
 });

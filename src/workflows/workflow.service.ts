@@ -1,15 +1,17 @@
 import { Injectable, BadRequestException, InternalServerErrorException } from '@nestjs/common';
 import { CreateWorkflowDto } from './dto/create-workflow.dto';
 import { runWorkflow, WorkflowDefinitionError, WorkflowResults } from '../orchestrator/task-runner.util';
-import { taskRegistry } from '../tasks/task-registry';
+import { TaskRegistry } from '../orchestrator/task-registry.service';
 import { TaskExecutionError } from '../tasks/task.interface';
 import { validate } from 'class-validator';
 import { plainToClass } from 'class-transformer';
 
 @Injectable()
 export class WorkflowService {
+  constructor(private readonly tasks: TaskRegistry) {}
+
   listTasks(): string[] {
-    return Object.keys(taskRegistry);
+    return this.tasks.names();
   }
 
   async run(createWorkflowDto: CreateWorkflowDto): Promise<WorkflowResults> {
@@ -30,7 +32,7 @@ export class WorkflowService {
 
       // Validate that all tasks exist in registry
       const missingTasks = workflowDto.steps
-        .filter(step => !taskRegistry[step.task])
+        .filter(step => !this.tasks.get(step.task))
         .map(step => step.task);
 
       if (missingTasks.length > 0) {
@@ -41,7 +43,7 @@ export class WorkflowService {
       }
 
       console.log(`Starting workflow: ${workflowDto.name}`);
-      const results = await runWorkflow(workflowDto.steps, taskRegistry);
+      const results = await runWorkflow(workflowDto.steps, this.tasks);
       console.log(`Completed workflow: ${workflowDto.name}`);
       
       return results;

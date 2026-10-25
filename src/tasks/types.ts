@@ -1,19 +1,12 @@
-export interface Repo {
-  id: number;
-  name: string;
-  stargazers_count: number;
-}
+import { Static, Type } from '@sinclair/typebox';
 
-export interface FetchReposParams {
-  org?: string;
-  perPage?: number;
-  page?: number;
-}
-
-export interface FilterReposParams {
-  minStars?: number;
-}
-
-export interface StoreReposParams {
-  collectionName?: string;
-} 
+// GitHub returns many more fields; these are the ones tasks rely on
+export const RepoSchema = Type.Object(
+  {
+    id: Type.Integer(),
+    name: Type.String(),
+    stargazers_count: Type.Integer({ minimum: 0 }),
+  },
+  { additionalProperties: true }
+);
+export type Repo = Static<typeof RepoSchema>;

@@ -1,5 +1,9 @@
 import { runWorkflow, validateWorkflow, WorkflowDefinitionError, WorkflowStep } from './task-runner.util';
-import { TaskExecutionError, TaskRegistry } from '../tasks/task.interface';
+import { Task, TaskContext, TaskExecutionError } from '../tasks/task.interface';
+import { fakeTask, silentLogger } from '../testing/task-context';
+
+const lookup = (tasks: Record<string, Task>) => new Map(Object.entries(tasks));
+const quiet = { createLogger: () => silentLogger };
 
 const step = (id: string, task: string, dependsOn: string[] = [], params?: any): WorkflowStep => ({
   id,
@@ -69,14 +73,15 @@ describe('runWorkflow', () => {
   });
 
   it('runs a linear chain in order and passes each result to the next step', async () => {
-    const registry: TaskRegistry = {
-      one: { execute: async () => 1 },
-      addParam: { execute: async (input: number, params: { n: number }) => input + params.n },
-    };
+    const registry = lookup({
+      one: fakeTask(async () => 1),
+      addParam: fakeTask(async ({ input, params }: TaskContext<{ n: number }, number>) => input + params.n),
+    });
 
     const results = await runWorkflow(
       [step('a', 'one'), step('b', 'addParam', ['a'], { n: 2 }), step('c', 'addParam', ['b'], { n: 3 })],
-      registry
+      registry,
+      quiet
     );
 
     expect(results).toEqual({ a: 1, b: 3, c: 6 });
@@ -84,22 +89,22 @@ describe('runWorkflow', () => {
 
   it('runs each step of a diamond once and passes multiple inputs as an array', async () => {
     const calls: string[] = [];
-    const record = (name: string, value: any) => ({
-      execute: async (input: any) => {
+    const record = (name: string, value: any) =>
+      fakeTask(async ({ input }) => {
         calls.push(name);
         return value ?? input;
-      },
-    });
-    const registry: TaskRegistry = {
+      });
+    const registry = lookup({
       root: record('root', 'r'),
       left: record('left', 'l'),
       right: record('right', 'x'),
       join: record('join', undefined),
-    };
+    });
 
     const results = await runWorkflow(
       [step('d', 'join', ['b', 'c']), step('b', 'left', ['a']), step('c', 'right', ['a']), step('a', 'root')],
-      registry
+      registry,
+      quiet
     );
 
     expect(calls).toHaveLength(4);
@@ -109,15 +114,16 @@ describe('runWorkflow', () => {
   });
 
   it('lets steps depend on tasks that return falsy values', async () => {
-    const registry: TaskRegistry = {
-      nothing: { execute: async () => undefined },
-      zero: { execute: async () => 0 },
-      echo: { execute: async (input: any) => input },
-    };
+    const registry = lookup({
+      nothing: fakeTask(async () => undefined),
+      zero: fakeTask(async () => 0),
+      echo: fakeTask(async ({ input }) => input),
+    });
 
     const results = await runWorkflow(
       [step('a', 'nothing'), step('b', 'zero', ['a']), step('c', 'echo', ['a', 'b'])],
-      registry
+      registry,
+      quiet
     );
 
     expect(results.c).toEqual([undefined, 0]);
@@ -127,13 +133,13 @@ describe('runWorkflow', () => {
     const execute = jest.fn(async () => 1);
 
     await expect(
-      runWorkflow([step('a', 't'), step('b', 't', ['missing'])], { t: { execute } })
+      runWorkflow([step('a', 't'), step('b', 't', ['missing'])], lookup({ t: fakeTask(execute) }))
     ).rejects.toBeInstanceOf(WorkflowDefinitionError);
     expect(execute).not.toHaveBeenCalled();
   });
 
   it('fails when a task is not in the registry', async () => {
-    await expect(runWorkflow([step('a', 'nope')], {})).rejects.toMatchObject({
+    await expect(runWorkflow([step('a', 'nope')], lookup({}))).rejects.toMatchObject({
       name: 'TaskExecutionError',
       taskId: 'a',
       taskName: 'nope',
@@ -143,16 +149,14 @@ describe('runWorkflow', () => {
 
   it('wraps a task failure with its cause and stops later steps', async () => {
     const after = jest.fn(async () => 1);
-    const registry: TaskRegistry = {
-      boom: {
-        execute: async () => {
-          throw new Error('kaput');
-        },
-      },
-      after: { execute: after },
-    };
+    const registry = lookup({
+      boom: fakeTask(async () => {
+        throw new Error('kaput');
+      }),
+      after: fakeTask(after),
+    });
 
-    const run = runWorkflow([step('a', 'boom'), step('b', 'after', ['a'])], registry);
+    const run = runWorkflow([step('a', 'boom'), step('b', 'after', ['a'])], registry, quiet);
 
     await expect(run).rejects.toBeInstanceOf(TaskExecutionError);
     await expect(run).rejects.toMatchObject({
@@ -162,5 +166,36 @@ describe('runWorkflow', () => {
       cause: expect.objectContaining({ message: 'kaput' }),
     });
     expect(after).not.toHaveBeenCalled();
+  });
+
+  it('hands each step a context for its first attempt', async () => {
+    const execute = jest.fn(async () => 1);
+    const contexts: string[] = [];
+
+    await runWorkflow([step('a', 't', [], { n: 1 }), step('b', 't', ['a'])], lookup({ t: fakeTask(execute) }), {
+      runId: 'run-1',
+      createLogger: context => {
+        contexts.push(context);
+        return silentLogger;
+      },
+    });
+
+    const [[first], [second]] = execute.mock.calls as unknown as [TaskContext][];
+    expect(first).toMatchObject({ params: { n: 1 }, attempt: 1, idempotencyKey: 'run-1:a' });
+    expect(first.signal).toBeInstanceOf(AbortSignal);
+    expect(first.signal.aborted).toBe(false);
+    expect(second).toMatchObject({ params: {}, input: 1, idempotencyKey: 'run-1:b' });
+    expect(contexts).toEqual(['t run=run-1 step=a', 't run=run-1 step=b']);
+  });
+
+  it('gives each run its own id', async () => {
+    const execute = jest.fn(async () => 1);
+    const registry = lookup({ t: fakeTask(execute) });
+
+    await runWorkflow([step('a', 't')], registry, quiet);
+    await runWorkflow([step('a', 't')], registry, quiet);
+
+    const keys = (execute.mock.calls as unknown as [TaskContext][]).map(([ctx]) => ctx.idempotencyKey);
+    expect(keys[0]).not.toBe(keys[1]);
   });
 });

@@ -14,18 +14,19 @@ sequenceDiagram
     participant Ctl as WorkflowController
     participant Svc as WorkflowService
     participant Run as runWorkflow
-    participant Reg as taskRegistry
+    participant Reg as TaskRegistry
     participant GH as GitHub API
     participant DB as MongoDB
 
     C->>Ctl: POST /workflow/run (name, steps)
     Ctl->>Svc: run(dto)
     Svc->>Svc: validate DTO, check task names exist
-    Svc->>Run: runWorkflow(steps, taskRegistry)
+    Svc->>Run: runWorkflow(steps, TaskRegistry)
 
     loop one step at a time, in dependency order
-        Run->>Reg: look up task by name
+        Run->>Reg: look up latest version of task by name
         Run->>Run: collect outputs of dependsOn from in-memory results
+        Run->>Run: build TaskContext (params, input, signal, attempt, idempotencyKey, logger)
         alt fetchRepos
             Run->>GH: GET /orgs/:org/repos
             GH-->>Run: repos
@@ -57,11 +58,12 @@ flowchart TB
         Runner["runWorkflow<br/>task-runner.util.ts"]
         Results[("results map<br/>in memory only")]
 
-        subgraph Tasks["Tasks: plain objects, outside Nest DI"]
-            Registry["taskRegistry"]
-            Fetch["fetchRepos"]
-            Filter["filterRepos"]
-            Store["storeRepos"]
+        Registry["TaskRegistry<br/>finds @TaskHandler providers<br/>via DiscoveryService"]
+
+        subgraph Tasks["TasksModule: @TaskHandler classes, Nest providers"]
+            Fetch["fetchRepos v1"]
+            Filter["filterRepos v1"]
+            Store["storeRepos v1"]
         end
     end
 
@@ -73,7 +75,7 @@ flowchart TB
     Ctl --> Svc --> Runner
     Runner -->|reads and writes step outputs| Results
     Runner -->|looks up by name| Registry
-    Registry --> Fetch & Filter & Store
+    Registry -.->|discovered at startup| Fetch & Filter & Store
     Fetch -->|no token, no retry, no timeout| GitHub
     Store -->|global mongoose model,<br/>second connection| Mongo
     App -.->|Nest connection, unused by tasks| Mongo

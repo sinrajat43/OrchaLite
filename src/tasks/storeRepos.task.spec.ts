@@ -1,5 +1,6 @@
 import { getRepoModel, RepoModel } from '../schemas/repo.schema';
-import { storeRepos } from './storeRepos.task';
+import { contextFor } from '../testing/task-context';
+import { StoreReposTask } from './storeRepos.task';
 
 describe('getRepoModel', () => {
   it('uses the default repos collection when no name is given', () => {
@@ -22,11 +23,7 @@ describe('getRepoModel', () => {
 
 describe('storeRepos', () => {
   const repos = [{ id: 1, name: 'a', stargazers_count: 5 }];
-
-  beforeEach(() => {
-    jest.spyOn(console, 'log').mockImplementation(() => undefined);
-    jest.spyOn(console, 'error').mockImplementation(() => undefined);
-  });
+  const storeRepos = new StoreReposTask();
 
   afterEach(() => {
     jest.restoreAllMocks();
@@ -35,7 +32,7 @@ describe('storeRepos', () => {
   it('writes one timestamped document to the default collection', async () => {
     const create = jest.spyOn(RepoModel, 'create').mockResolvedValue(undefined as any);
 
-    await storeRepos.execute(repos);
+    await storeRepos.execute(contextFor({}, repos));
 
     expect(create).toHaveBeenCalledWith({ timestamp: expect.any(Date), data: repos });
   });
@@ -44,7 +41,7 @@ describe('storeRepos', () => {
     const create = jest.spyOn(getRepoModel('other-repos'), 'create').mockResolvedValue(undefined as any);
     const defaultCreate = jest.spyOn(RepoModel, 'create').mockResolvedValue(undefined as any);
 
-    await storeRepos.execute(repos, { collectionName: 'other-repos' });
+    await storeRepos.execute(contextFor({ collectionName: 'other-repos' }, repos));
 
     expect(create).toHaveBeenCalledTimes(1);
     expect(defaultCreate).not.toHaveBeenCalled();
@@ -53,6 +50,6 @@ describe('storeRepos', () => {
   it('wraps database errors', async () => {
     jest.spyOn(RepoModel, 'create').mockRejectedValue(new Error('disk full'));
 
-    await expect(storeRepos.execute(repos)).rejects.toThrow('Failed to store repos: disk full');
+    await expect(storeRepos.execute(contextFor({}, repos))).rejects.toThrow('Failed to store repos: disk full');
   });
 });

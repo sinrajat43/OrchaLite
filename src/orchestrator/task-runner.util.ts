@@ -1,4 +1,7 @@
-import { Task, TaskExecutionError, TaskRegistry } from '../tasks/task.interface';
+import { Logger } from '@nestjs/common';
+import { randomUUID } from 'crypto';
+import { TaskExecutionError, TaskLogger } from '../tasks/task.interface';
+import { TaskLookup } from './task-registry.service';
 
 export interface WorkflowStep {
   id: string;
@@ -9,6 +12,13 @@ export interface WorkflowStep {
 
 export interface WorkflowResults {
   [key: string]: any;
+}
+
+export interface RunOptions {
+  /** Defaults to a random UUID */
+  runId?: string;
+  /** Builds the logger handed to a step; defaults to a Nest Logger */
+  createLogger?: (context: string) => TaskLogger;
 }
 
 /**
@@ -73,15 +83,19 @@ export function validateWorkflow(steps: WorkflowStep[]): void {
 /**
  * Executes a workflow defined as a DAG of tasks
  * @param steps - Array of workflow steps
- * @param taskRegistry - Registry of available tasks
+ * @param tasks - Looks up the task each step names
+ * @param options - Run id and logger factory
  * @returns Promise resolving to workflow results
  * @throws WorkflowDefinitionError if the steps do not form a valid DAG
  * @throws TaskExecutionError if workflow execution fails
  */
 export async function runWorkflow(
   steps: WorkflowStep[],
-  taskRegistry: TaskRegistry
+  tasks: TaskLookup,
+  options: RunOptions = {}
 ): Promise<WorkflowResults> {
+  const runId = options.runId ?? randomUUID();
+  const createLogger = options.createLogger ?? ((context: string) => new Logger(context));
   const results: WorkflowResults = {};
   const visited = new Set<string>();
   const errors: TaskExecutionError[] = [];
@@ -113,7 +127,7 @@ export async function runWorkflow(
       });
 
       const mergedInput = inputs.length === 1 ? inputs[0] : inputs;
-      const task = taskRegistry[step.task];
+      const task = tasks.get(step.task);
 
       if (!task) {
         throw new TaskExecutionError(
@@ -129,7 +143,15 @@ export async function runWorkflow(
       //   backoff: 'exponential'
       // });
 
-      const result = await task.execute(mergedInput, step.params);
+      // Nothing aborts the signal yet; timeouts and cancellation arrive in B3
+      const result = await task.execute({
+        params: step.params ?? {},
+        input: mergedInput,
+        signal: new AbortController().signal,
+        attempt: 1,
+        idempotencyKey: `${runId}:${step.id}`,
+        logger: createLogger(`${step.task} run=${runId} step=${step.id}`),
+      });
       results[step.id] = result;
       visited.add(step.id);
 

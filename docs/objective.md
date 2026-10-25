@@ -182,7 +182,7 @@ decide what a persisted step record has to store.
 
 ### Phase A: generality
 
-- [ ] **A1. Task contract and registry**
+- [x] **A1. Task contract and registry** (done 2026-10-25)
   - Build: the `Task` interface and `TaskContext` above, a `@TaskHandler`
     decorator, discovery through Nest's `DiscoveryService`, and the three
     existing tasks ported onto it with behaviour unchanged.
@@ -306,7 +306,6 @@ Several of these come back in later horizons, noted on each item.
 | Decision | Options | Leaning |
 | --- | --- | --- |
 | Expression language (needed for A2) | JSONata, JMESPath | JSONata: it reshapes data as well as querying it, so it also covers the `transform` task |
-| Schema library (needed for A1) | Zod, JSON Schema with Ajv, class-validator | Open. JSON Schema serialises cleanly for `GET /tasks`; Zod is nicer to write |
 | Where large step outputs live (needed for B1) | inline in `step_runs`, separate collection, object storage | Open |
 | Run history model (needed for B1) | mutable status documents, append-only events with status derived from them | Event-sourced: it is how Temporal works, and it suits MongoDB, Cassandra and Kafka alike, which keeps horizon 2 a port rather than a redesign |
 | Try Kafka as the step dispatch queue in B2 | yes as a side experiment, no | Open. Its limits with retries and delays are a useful lesson, but it is not the queue to keep |
@@ -322,3 +321,7 @@ Several of these come back in later horizons, noted on each item.
 | 2026-10-04 | North star set: a distributed durable-execution platform in five horizons; the current objective becomes horizon 1 and is unchanged | Gives Kafka, Cassandra, clustering and multi-tenancy a place without widening the current work |
 | 2026-10-04 | Kafka and Cassandra come in horizon 2 as adapters, ported from a working MongoDB version | Learning the engine design and their constraints at the same time would slow both |
 | 2026-10-04 | Model on Step Functions (declarative, event-driven), not Airflow or a canvas-first product | The backend lessons are in the engine; a canvas is a layer on top and stays possible |
+| 2026-10-25 | Task schemas are TypeBox (JSON Schema), validated with Ajv from A3 | The schema is the language-neutral contract for `GET /tasks` and horizon 4 workers, with TS types inferred from it. `@sinclair/typebox` 0.34, because the `typebox` 1.x package is ESM-only and the app is CommonJS |
+| 2026-10-25 | A task registers by being listed as a provider in a Nest module (`TasksModule` for built-ins) | Nest only instantiates declared providers. The engine (`TaskRegistry`, runner, service) never changes; scanning the filesystem for task files would hide that wiring |
+| 2026-10-25 | A step's `task` name resolves to the latest registered version | Pinning a version in the definition belongs with stored, versioned definitions in A4 |
+| 2026-10-25 | Until A2, `TaskContext` carries the positional `input`; `signal` is never aborted and `attempt` is always 1 | Keeps A1 a behaviour-preserving port; B3 adds timeouts and retries |

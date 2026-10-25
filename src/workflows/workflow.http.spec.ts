@@ -1,20 +1,53 @@
+import { Module } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
+import { Type } from '@sinclair/typebox';
 import { configureApp } from '../app.setup';
+import { Task, TaskContext } from '../tasks/task.interface';
+import { TaskHandler } from '../tasks/task-handler.decorator';
 import { WorkflowModule } from './workflow.module';
 
-jest.mock('../tasks/task-registry', () => ({
-  taskRegistry: {
-    one: { execute: async () => 1 },
-    double: { execute: async (input: number) => input * 2 },
-    nothing: { execute: async () => undefined },
-    boom: {
-      execute: async () => {
-        throw new Error('kaput');
-      },
-    },
-  },
-}));
+abstract class TestTask implements Task {
+  readonly paramsSchema = Type.Any();
+  readonly outputSchema = Type.Any();
+  abstract execute(ctx: TaskContext): Promise<unknown>;
+}
+
+@TaskHandler({ name: 'one', version: 1 })
+class OneTask extends TestTask {
+  async execute() {
+    return 1;
+  }
+}
+
+@TaskHandler({ name: 'double', version: 1 })
+class DoubleTask extends TestTask {
+  async execute({ input }: TaskContext<unknown, number>) {
+    return input * 2;
+  }
+}
+
+@TaskHandler({ name: 'nothing', version: 1 })
+class NothingTask extends TestTask {
+  async execute() {
+    return undefined;
+  }
+}
+
+@TaskHandler({ name: 'boom', version: 1 })
+class BoomTask extends TestTask {
+  async execute(): Promise<never> {
+    throw new Error('kaput');
+  }
+}
+
+// Tasks registered outside the engine's modules, the way any new task would be.
+// WorkflowModule alone, plus these, so no MongoDB connection is needed.
+@Module({
+  imports: [WorkflowModule],
+  providers: [OneTask, DoubleTask, NothingTask, BoomTask],
+})
+class TestAppModule {}
 
 describe('HTTP API', () => {
   let app: NestExpressApplication;
@@ -31,8 +64,7 @@ describe('HTTP API', () => {
     jest.spyOn(console, 'log').mockImplementation(() => undefined);
     jest.spyOn(console, 'error').mockImplementation(() => undefined);
 
-    // WorkflowModule alone, so no MongoDB connection is needed
-    app = await NestFactory.create<NestExpressApplication>(WorkflowModule, { logger: false });
+    app = await NestFactory.create<NestExpressApplication>(TestAppModule, { logger: false });
     configureApp(app);
     await app.listen(0);
     baseUrl = await app.getUrl();
@@ -51,11 +83,13 @@ describe('HTTP API', () => {
     expect(await response.text()).toContain('<title>OrchaLite</title>');
   });
 
-  it('lists the registered tasks', async () => {
+  it('lists the built-in tasks and tasks discovered in other modules', async () => {
     const response = await fetch(`${baseUrl}/workflow/tasks`);
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual(['one', 'double', 'nothing', 'boom']);
+    expect(await response.json()).toEqual(
+      expect.arrayContaining(['fetchRepos', 'filterRepos', 'storeRepos', 'one', 'double', 'nothing', 'boom'])
+    );
   });
 
   it('runs a workflow and returns every step result', async () => {

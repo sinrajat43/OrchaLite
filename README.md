@@ -180,13 +180,16 @@ src/
 │   ├── workflow.service.ts
 │   └── dto/
 │       └── create-workflow.dto.ts
-├── tasks/                 # Task implementations
-│   ├── task.interface.ts
-│   ├── task-registry.ts
+├── tasks/                 # Task contract and implementations
+│   ├── task.interface.ts         # Task and TaskContext
+│   ├── task-handler.decorator.ts # @TaskHandler({ name, version })
+│   ├── tasks.module.ts           # Built-in task catalogue
 │   ├── fetchRepos.task.ts
 │   ├── filterRepos.task.ts
 │   └── storeRepos.task.ts
 ├── orchestrator/          # Workflow execution engine
+│   ├── orchestrator.module.ts
+│   ├── task-registry.service.ts  # Discovers @TaskHandler providers
 │   └── task-runner.util.ts
 └── schemas/              # MongoDB schemas
     └── repo.schema.ts
@@ -194,25 +197,37 @@ src/
 
 ## Adding New Tasks
 
-1. Create a new task file in `src/tasks/`
-2. Implement the `Task` interface
-3. Add the task to the `taskRegistry` in `src/tasks/task-registry.ts`
+1. Create a task class in `src/tasks/`: implement `Task`, describe its params
+   and output with [TypeBox](https://github.com/sinclairzx81/typebox) schemas,
+   and mark it with `@TaskHandler({ name, version })`
+2. List it in the `providers` of `TasksModule` (or any module in the app)
 
-Example task implementation:
+`TaskRegistry` discovers it at startup; no engine code changes. A step's `task`
+field uses the name and gets the latest version.
+
 ```typescript
-import { Task } from './task.interface';
+import { Static, Type } from '@sinclair/typebox';
+import { Task, TaskContext } from './task.interface';
+import { TaskHandler } from './task-handler.decorator';
 
-interface MyTaskParams {
-  param1?: string;
-  param2?: number;
-}
+const GreetParamsSchema = Type.Object({ name: Type.String() });
+type GreetParams = Static<typeof GreetParamsSchema>;
 
-export const myTask: Task<InputType, OutputType, MyTaskParams> = {
-  async execute(input: InputType, params?: MyTaskParams): Promise<OutputType> {
-    // Task implementation
+@TaskHandler({ name: 'greet', version: 1 })
+export class GreetTask implements Task<GreetParams, string> {
+  readonly paramsSchema = GreetParamsSchema;
+  readonly outputSchema = Type.String();
+
+  async execute({ params, logger }: TaskContext<GreetParams>): Promise<string> {
+    logger.log(`Greeting ${params.name}`);
+    return `Hello, ${params.name}`;
   }
-};
+}
 ```
+
+The context also carries `input` (dependency outputs), an abort `signal`, the
+`attempt` number and an `idempotencyKey` stable per run and step. Schemas are
+declared but not yet enforced; validation at submit time arrives in stage A3.
 
 ## Error Handling
 
