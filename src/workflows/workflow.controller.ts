@@ -1,4 +1,5 @@
-import { Controller, Get, Post, Body } from '@nestjs/common';
+import { Controller, Get, Post, Body, Res } from '@nestjs/common';
+import { Response } from 'express';
 import { WorkflowService } from './workflow.service';
 import { CreateWorkflowDto } from './dto/create-workflow.dto';
 import { WorkflowResults } from '../orchestrator/task-runner.util';
@@ -13,7 +14,11 @@ export class WorkflowController {
   }
 
   @Post('run')
-  runWorkflow(@Body() dto: CreateWorkflowDto): Promise<WorkflowResults> {
-    return this.workflowService.run(dto);
+  runWorkflow(
+    @Body() dto: CreateWorkflowDto,
+    @Res({ passthrough: true }) res: Response
+  ): Promise<WorkflowResults> {
+    // Set as soon as the run is recorded, so failed runs carry it too
+    return this.workflowService.run(dto, runId => res.setHeader('X-Run-Id', runId));
   }
 }

@@ -163,4 +163,26 @@ describe('runWorkflow', () => {
     });
     expect(after).not.toHaveBeenCalled();
   });
+
+  it('reports each step to the hooks in order, including the failure', async () => {
+    const calls: string[] = [];
+    const registry: TaskRegistry = {
+      one: { execute: async () => 1 },
+      boom: {
+        execute: async () => {
+          throw new Error('kaput');
+        },
+      },
+    };
+
+    await expect(
+      runWorkflow([step('a', 'one'), step('b', 'boom', ['a']), step('c', 'one', ['b'])], registry, {
+        onStepStarted: async s => { calls.push(`start ${s.id}`); },
+        onStepSucceeded: async (s, output) => { calls.push(`ok ${s.id} ${output}`); },
+        onStepFailed: async (s, error) => { calls.push(`fail ${s.id} ${error.message}`); },
+      })
+    ).rejects.toBeInstanceOf(TaskExecutionError);
+
+    expect(calls).toEqual(['start a', 'ok a 1', 'start b', 'fail b Task execution failed: kaput']);
+  });
 });

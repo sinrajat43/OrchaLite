@@ -113,6 +113,9 @@ As of 2026-10-04:
   the value, several give an array. `params` are static.
 - Run state lives in memory. Nothing is persisted about a run, so a crash or
   client timeout loses it.
+  - Update 2026-10-25: every run is now recorded as it happens (`run_events`
+    plus a `workflow_runs` summary, `GET /runs`). A crashed run is marked
+    `ABANDONED` on restart but is not resumed; that is still B1 and B2.
 - `GET /workflow/tasks` lists the registered task names.
 - A single-page UI (`public/index.html`) offers a JSON editor with examples, a
   live step graph with validation, and per-step results and errors.
@@ -307,7 +310,7 @@ Several of these come back in later horizons, noted on each item.
 | --- | --- | --- |
 | Expression language (needed for A2) | JSONata, JMESPath | JSONata: it reshapes data as well as querying it, so it also covers the `transform` task |
 | Schema library (needed for A1) | Zod, JSON Schema with Ajv, class-validator | Open. JSON Schema serialises cleanly for `GET /tasks`; Zod is nicer to write |
-| Where large step outputs live (needed for B1) | inline in `step_runs`, separate collection, object storage | Open |
+| Where large step outputs live (needed for B1) | inline in `step_runs`, separate collection, object storage | For now inline in the `StepSucceeded` event, with outputs over 256 KB stored as a preview ([run history](run-history-design.md)) |
 | Run history model (needed for B1) | mutable status documents, append-only events with status derived from them | Event-sourced: it is how Temporal works, and it suits MongoDB, Cassandra and Kafka alike, which keeps horizon 2 a port rather than a redesign |
 | Try Kafka as the step dispatch queue in B2 | yes as a side experiment, no | Open. Its limits with retries and delays are a useful lesson, but it is not the queue to keep |
 
@@ -322,3 +325,4 @@ Several of these come back in later horizons, noted on each item.
 | 2026-10-04 | North star set: a distributed durable-execution platform in five horizons; the current objective becomes horizon 1 and is unchanged | Gives Kafka, Cassandra, clustering and multi-tenancy a place without widening the current work |
 | 2026-10-04 | Kafka and Cassandra come in horizon 2 as adapters, ported from a working MongoDB version | Learning the engine design and their constraints at the same time would slow both |
 | 2026-10-04 | Model on Step Functions (declarative, event-driven), not Airflow or a canvas-first product | The backend lessons are in the engine; a canvas is a layer on top and stays possible |
+| 2026-10-25 | Run history built ahead of phase A as a first slice of B1: append-only `run_events` plus a `workflow_runs` summary rebuilt from them; runs still execute inside the request | Being able to look back at runs is useful now, and it starts the event-sourced model the roadmap leans towards. See [run-history-design.md](run-history-design.md) |

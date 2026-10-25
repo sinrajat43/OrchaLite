@@ -141,7 +141,9 @@ With the app running, open http://localhost:3000 for a single-page UI (`public/i
 - See the steps drawn as a dependency graph, with problems (unknown steps or tasks, cycles) flagged as you type
 - Run it and inspect each step's output, or the error and the step that failed
 
-Results appear when the whole run has finished; there is no run history or live progress yet.
+- Browse past runs in the history panel, filter them by status, and open one to see a timeline of its steps, their outputs and errors, or load its workflow back into the editor
+
+Results appear when the whole run has finished; there is no live progress yet.
 
 ## API Endpoints
 
@@ -167,7 +169,15 @@ Executes a workflow.
 ```
 
 **Response:**
-Returns the results of all steps in the workflow.
+Returns the results of all steps in the workflow. The `X-Run-Id` header carries the id of the recorded run (also on failures, where the error body includes `runId`).
+
+### Run history
+
+Every run that passes validation is recorded in MongoDB: an append-only timeline in `run_events` and one summary per run in `workflow_runs`. Runs left `RUNNING` by a server that stopped are marked `ABANDONED` on the next start. See [the design](docs/run-history-design.md).
+
+- `GET /runs?status=FAILED&name=...&limit=20&before=<runId>`: run summaries, newest first. `before` pages to older runs.
+- `GET /runs/:id`: one run with each step's status, start and end time, duration and error.
+- `GET /runs/:id/events`: the run's full timeline, including step outputs (outputs over 256 KB are stored as a preview).
 
 ## Project Structure
 
@@ -188,6 +198,13 @@ src/
 │   └── storeRepos.task.ts
 ├── orchestrator/          # Workflow execution engine
 │   └── task-runner.util.ts
+├── runs/                  # Run history: events, summaries, /runs API
+│   ├── run-recorder.ts
+│   ├── run-projection.ts
+│   ├── run-store.ts
+│   ├── mongo-run-store.ts
+│   ├── in-memory-run-store.ts
+│   └── runs.controller.ts
 └── schemas/              # MongoDB schemas
     └── repo.schema.ts
 ```
@@ -228,7 +245,6 @@ All errors are logged and propagated appropriately.
 ## Future Enhancements
 
 Planned features:
-- Workflow status tracking
 - Task timeout handling
 - Retry mechanisms
 - Workflow versioning

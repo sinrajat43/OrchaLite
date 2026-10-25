@@ -12,6 +12,16 @@ export interface WorkflowResults {
 }
 
 /**
+ * Optional callbacks for observing a run, e.g. to record its history.
+ * They are awaited in order, so they must handle their own errors.
+ */
+export interface RunHooks {
+  onStepStarted?(step: WorkflowStep): Promise<void>;
+  onStepSucceeded?(step: WorkflowStep, output: any): Promise<void>;
+  onStepFailed?(step: WorkflowStep, error: TaskExecutionError): Promise<void>;
+}
+
+/**
  * Error thrown when a workflow definition is not a valid DAG
  */
 export class WorkflowDefinitionError extends Error {
@@ -74,13 +84,15 @@ export function validateWorkflow(steps: WorkflowStep[]): void {
  * Executes a workflow defined as a DAG of tasks
  * @param steps - Array of workflow steps
  * @param taskRegistry - Registry of available tasks
+ * @param hooks - Optional callbacks fired as each step starts, succeeds or fails
  * @returns Promise resolving to workflow results
  * @throws WorkflowDefinitionError if the steps do not form a valid DAG
  * @throws TaskExecutionError if workflow execution fails
  */
 export async function runWorkflow(
   steps: WorkflowStep[],
-  taskRegistry: TaskRegistry
+  taskRegistry: TaskRegistry,
+  hooks: RunHooks = {}
 ): Promise<WorkflowResults> {
   const results: WorkflowResults = {};
   const visited = new Set<string>();
@@ -92,6 +104,8 @@ export async function runWorkflow(
 
   async function runStep(step: WorkflowStep) {
     if (visited.has(step.id)) return;
+
+    await hooks.onStepStarted?.(step);
 
     try {
       console.log(`Starting task execution: ${step.task} (${step.id})`);
@@ -146,8 +160,11 @@ export async function runWorkflow(
       
       errors.push(taskError);
       console.error(`Task execution failed: ${step.task} (${step.id})`, taskError);
+      await hooks.onStepFailed?.(step, taskError);
       throw taskError;
     }
+
+    await hooks.onStepSucceeded?.(step, results[step.id]);
   }
 
   try {

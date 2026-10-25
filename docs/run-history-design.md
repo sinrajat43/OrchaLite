@@ -1,6 +1,6 @@
 # Run history design
 
-Status: proposal · 2026-10-25
+Status: implemented · 2026-10-25
 
 ## Goal
 
@@ -73,10 +73,12 @@ Changes by file:
 | File | Change |
 | --- | --- |
 | `orchestrator/task-runner.util.ts` | Accepts an optional `hooks` argument: `onStepStarted`, `onStepSucceeded`, `onStepFailed`. No storage code. |
+| `runs/run-projection.ts` (new) | `applyEvent` and `replay`: the pure function that turns events into a summary. |
 | `runs/run-store.ts` (new) | `RunStore` interface: `append(event)`, `upsertSummary(run)`, `listRuns(filter)`, `getRun(id)`, `getEvents(id)`. |
 | `runs/mongo-run-store.ts` (new) | Mongoose models for the two collections. |
 | `runs/in-memory-run-store.ts` (new) | Used by the HTTP specs, which run without MongoDB. |
-| `runs/run-recorder.ts` (new) | Turns hooks into events and keeps the summary in step. |
+| `runs/run-recorder.ts` (new) | Turns hooks into events and keeps the summary in step; marks unfinished runs `ABANDONED` at startup. |
+| `runs/runs.module.ts` (new) | `RunsModule.forRoot(store)`, global; MongoDB by default, in-memory in tests. |
 | `runs/runs.controller.ts` (new) | Read API. |
 | `workflows/workflow.service.ts` | Creates the run before executing, wires the recorder in, records the final outcome. |
 | `public/index.html` | History panel and run detail view. |
@@ -89,7 +91,7 @@ erDiagram
     workflow_runs ||--|{ step_summary : embeds
 
     workflow_runs {
-        string _id "runId (ULID, sortable by time)"
+        string _id "runId (ObjectId hex, sortable by time)"
         string name
         string status "RUNNING, SUCCEEDED, FAILED or ABANDONED"
         date startedAt
@@ -125,19 +127,23 @@ Event types:
 | --- | --- |
 | `RunStarted` | `{ name, definition }` |
 | `StepStarted` | `{ stepId, task, params }` |
-| `StepSucceeded` | `{ stepId, durationMs, output }` (see output size below) |
-| `StepFailed` | `{ stepId, durationMs, error }` |
+| `StepSucceeded` | `{ stepId, output }` (see output size below) |
+| `StepFailed` | `{ stepId, error }` |
 | `StepSkipped` | `{ stepId, reason: "upstream failed" }` |
-| `RunSucceeded` / `RunFailed` | `{ durationMs, failedStepId?, error? }` |
-| `RunAbandoned` | `{ reason: "process restarted while running" }` |
+| `RunSucceeded` / `RunFailed` | `{ failedStepId?, error? }` |
+| `RunAbandoned` | `{ error: "The server stopped while this run was in progress" }` |
+
+Durations are not stored in events; the projection computes them from the
+event timestamps.
 
 Indexes:
 
 - `run_events`: unique `{ runId: 1, seq: 1 }`. Orders the timeline and makes a
   duplicate append fail instead of silently doubling an event.
-- `workflow_runs`: `{ startedAt: -1 }`, `{ status: 1, startedAt: -1 }`,
-  `{ name: 1, startedAt: -1 }` for the list and its filters.
-- Optional TTL on both (for example 30 days) so history does not grow forever.
+- `workflow_runs`: `{ status: 1, _id: -1 }` and `{ name: 1, _id: -1 }` for the
+  filtered lists. Run ids are ObjectId hex strings, which sort by creation
+  time, so sorting by `_id` is sorting by start time.
+- No TTL: all history is kept.
 
 **Step outputs.** Outputs can be large (`fetchRepos` returns up to 100 repos).
 Store outputs inline in the `StepSucceeded` event up to a cap (proposed 256 KB
@@ -230,6 +236,8 @@ Handling it:
    projection is.
 2. On startup, any run still `RUNNING` is from a dead process (runs only live
    inside a request). The app rebuilds its summary and appends `RunAbandoned`.
+   Steps keep their last recorded status, so a step left `RUNNING` shows where
+   the process died.
 
 This is the same gap B2 closes properly with leases and heartbeats; here it is
 only detected, not recovered.
@@ -272,10 +280,9 @@ while new runs arrive.
 4. Abandoned-run sweep on startup.
 5. UI history panel and timeline.
 
-## Open questions
+## Decisions
 
-- Is pulling this slice of B1 ahead of A1–A4 OK? It is designed so the A stages
-  don't break it: events record task names and params as given, whatever the
-  task contract becomes.
-- Output cap: 256 KB, or smaller?
-- Retention: keep everything, or a 30-day TTL?
+- Built ahead of A1 to A4, agreed 2026-10-25. Events record task names and
+  params as given, so the A stages should not break it.
+- Output cap: 256 KB.
+- Retention: keep all history.

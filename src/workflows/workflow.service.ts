@@ -1,6 +1,7 @@
 import { Injectable, BadRequestException, InternalServerErrorException } from '@nestjs/common';
 import { CreateWorkflowDto } from './dto/create-workflow.dto';
-import { runWorkflow, WorkflowDefinitionError, WorkflowResults } from '../orchestrator/task-runner.util';
+import { runWorkflow, validateWorkflow, WorkflowDefinitionError, WorkflowResults } from '../orchestrator/task-runner.util';
+import { RunRecorder } from '../runs/run-recorder';
 import { taskRegistry } from '../tasks/task-registry';
 import { TaskExecutionError } from '../tasks/task.interface';
 import { validate } from 'class-validator';
@@ -8,11 +9,22 @@ import { plainToClass } from 'class-transformer';
 
 @Injectable()
 export class WorkflowService {
+  constructor(private readonly runRecorder: RunRecorder) {}
+
   listTasks(): string[] {
     return Object.keys(taskRegistry);
   }
 
-  async run(createWorkflowDto: CreateWorkflowDto): Promise<WorkflowResults> {
+  /**
+   * Runs a workflow and records it in the run history
+   * @param onRunCreated - Called with the run id once the run is recorded, before any step runs
+   */
+  async run(
+    createWorkflowDto: CreateWorkflowDto,
+    onRunCreated?: (runId: string) => void
+  ): Promise<WorkflowResults> {
+    let runId: string | undefined;
+
     try {
       // Validate DTO
       const workflowDto = plainToClass(CreateWorkflowDto, createWorkflowDto);
@@ -40,9 +52,23 @@ export class WorkflowService {
         });
       }
 
-      console.log(`Starting workflow: ${workflowDto.name}`);
-      const results = await runWorkflow(workflowDto.steps, taskRegistry);
-      console.log(`Completed workflow: ${workflowDto.name}`);
+      // Rejected definitions are not runs, so validate before recording one
+      validateWorkflow(workflowDto.steps);
+
+      const run = await this.runRecorder.start({ name: workflowDto.name, steps: workflowDto.steps });
+      runId = run.runId;
+      onRunCreated?.(runId);
+
+      console.log(`Starting workflow: ${workflowDto.name} (run ${runId})`);
+      let results: WorkflowResults;
+      try {
+        results = await runWorkflow(workflowDto.steps, taskRegistry, run.hooks);
+      } catch (error) {
+        await run.fail(error as Error);
+        throw error;
+      }
+      await run.succeed();
+      console.log(`Completed workflow: ${workflowDto.name} (run ${runId})`);
       
       return results;
     } catch (error) {
@@ -59,7 +85,8 @@ export class WorkflowService {
         throw new InternalServerErrorException({
           message: error.message,
           stepId: error.taskId,
-          task: error.taskName
+          task: error.taskName,
+          runId
         });
       }
 
