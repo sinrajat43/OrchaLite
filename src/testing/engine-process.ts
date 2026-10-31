@@ -2,11 +2,18 @@ import { ChildProcess, execFileSync, spawn } from 'child_process';
 import { join } from 'path';
 
 const ROOT = join(__dirname, '..', '..');
-const OUT_DIR = join(ROOT, 'build', 'e2e');
+const outDir = (suite: string) => join(ROOT, 'build', 'e2e', suite);
 
-/** Compiles the app, so tests can start it as real processes that can really be killed */
-export function buildEngine(): void {
-  execFileSync(join(ROOT, 'node_modules', '.bin', 'tsc'), ['-p', join(ROOT, 'tsconfig.build.json'), '--outDir', OUT_DIR, '--incremental', 'false'], {
+let built: string | undefined;
+
+/**
+ * Compiles the app, so tests can start it as real processes that can really be
+ * killed. Each suite has its own directory, because suites run in parallel and
+ * one must not start a process from files another is rewriting.
+ */
+export function buildEngine(suite: string): void {
+  built = outDir(suite);
+  execFileSync(join(ROOT, 'node_modules', '.bin', 'tsc'), ['-p', join(ROOT, 'tsconfig.build.json'), '--outDir', built, '--incremental', 'false'], {
     stdio: 'pipe',
   });
 }
@@ -25,8 +32,8 @@ export interface EngineProcess {
  * @param env - Must include MONGODB_URI and ORCHALITE_ROLES
  */
 export function startEngineProcess(env: Record<string, string>): EngineProcess {
-  const child = spawn(process.execPath, [join(OUT_DIR, 'main.js')], {
-    cwd: OUT_DIR,
+  const child = spawn(process.execPath, [join(built, 'main.js')], {
+    cwd: built,
     env: { ...process.env, NODE_ENV: 'test', ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
   });

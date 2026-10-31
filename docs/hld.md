@@ -175,7 +175,6 @@ the scheduler, workers and queue, see [engine-design.md](engine-design.md).
 
 | Area | Limit | Roadmap |
 | --- | --- | --- |
-| Queue | MongoDB only; the BullMQ adapter is not built | B2 |
 | Triggers | API only, with no UI | Not planned yet |
 | Scheduling cost | Each pass reads all of a run's rows, so very large fan-outs spend most of their time here | Not planned yet |
 | Overlapping runs | A workflow's `concurrency` limits steps, not runs | Open |

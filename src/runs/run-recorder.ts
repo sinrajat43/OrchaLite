@@ -5,6 +5,21 @@ import { RunEvent, RunEventType, RunSummary } from './run.types';
 const MAX_APPEND_ATTEMPTS = 10;
 
 /**
+ * A run's summary, brought up to date with its events. A process that died
+ * between writing an event and its summary leaves the summary behind, and
+ * deciding anything from that stale copy would repeat what already happened.
+ */
+export async function readRun(store: RunStore, runId: string): Promise<RunSummary | null> {
+  const stored = await store.getRun(runId);
+  if (!stored) return null;
+  const later = await store.getEvents(runId, stored.lastSeq);
+  if (!later.length) return stored;
+  const current = later.reduce<RunSummary>(applyEvent, stored);
+  await store.saveSummary(current, stored.lastSeq);
+  return current;
+}
+
+/**
  * Appends an event to a run with optimistic concurrency: read the version
  * (lastSeq), claim the next seq through the unique (runId, seq) index, and on a
  * collision start over from the newer state. Any number of writers can share a run.

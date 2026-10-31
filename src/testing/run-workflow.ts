@@ -11,6 +11,7 @@ import { appendRunEvent } from '../runs/run-recorder';
 import { isTerminal, RunResult, toRunResult } from '../runs/run-result';
 import { ConnectionLookup, TaskExecutionError, TaskLogger } from '../tasks/task.interface';
 import { silentLogger } from './task-context';
+import { until } from './wait';
 
 export interface RunOptions {
   input?: Record<string, unknown>;
@@ -60,11 +61,7 @@ export async function runWorkflow(definition: WorkflowDefinition, tasks: TaskLoo
   try {
     await appendRunEvent(store, runId, 'RunStarted', { definition, input, execution: 'queue' });
     signals.runChanged(runId);
-    let run = await store.getRun(runId);
-    while (!isTerminal(run.status)) {
-      await new Promise(resolve => setTimeout(resolve, 2));
-      run = await store.getRun(runId);
-    }
+    const run = await until(() => store.getRun(runId), current => isTerminal(current.status), `run ${runId} to end`);
     if (run.status !== 'SUCCEEDED') {
       const task = run.steps.find(step => step.id === run.failedStepId)?.task;
       throw new TaskExecutionError(run.failedStepId, task, run.error);

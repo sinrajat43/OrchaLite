@@ -100,8 +100,7 @@ part by hand and understanding why those tools are designed the way they are.
 
 ## Where the project is today
 
-As of 2026-10-31, phases A and B are done, so horizon 1 is complete apart from
-the BullMQ adapter (see B2). See [engine-design.md](engine-design.md) for how the
+As of 2026-10-31, phases A and B are done, so horizon 1 is complete. See [engine-design.md](engine-design.md) for how the
 durable engine works.
 
 - Workflows are JSON definitions with declared `input`, `{{ }}` JSONata
@@ -243,13 +242,10 @@ decide what a persisted step record has to store.
 
 - [x] **B2. API, scheduler and workers split** (done 2026-10-31)
   - Build: a scheduler that queues ready steps; workers that claim a step with
-    a lease and heartbeat; requeue on lease expiry, on a `StepQueue` port with a
-    MongoDB adapter (`findOneAndUpdate`); `ORCHALITE_ROLES` to run each part as
-    its own process; `delay` as a stored wait. See
+    a lease and heartbeat; requeue on lease expiry, on a `StepQueue` port with
+    MongoDB (`findOneAndUpdate`) and BullMQ adapters; `ORCHALITE_ROLES` to run
+    each part as its own process; `delay` as a stored wait. See
     [engine-design.md](engine-design.md).
-  - Not built: the BullMQ adapter. It needs Redis, which was not available to
-    test against, and the done-when does not depend on it. The contract tests
-    in `engine/step-queue.spec.ts` are ready for it.
   - Teaches: at-least-once delivery, leases and visibility timeouts, crash
     recovery, ports and adapters.
   - Done when: a test kills a worker mid-step and the run completes on another
@@ -370,11 +366,15 @@ Several of these come back in later horizons, noted on each item.
 | 2026-10-31 | Run requests return `202` with a run id; `?wait=true` holds the request open by polling the run's state, and returns `200` or the failed step's `500` | Execution no longer depends on the request. The wait only reads state, so it keeps working once API and workers are separate processes |
 | 2026-10-31 | `lastSeq` is the run's version: an append claims the next seq through the unique `(runId, seq)` index and retries on a collision; the summary is replaced only if its `lastSeq` is unchanged | Optimistic concurrency without locks, so any number of writers can share a run. A summary left behind by a crash catches up from the events on the next append |
 | 2026-10-31 | The projection rejects any event its state machine does not allow from the current state | A stale writer or an engine bug fails loudly instead of quietly rewriting history |
+| 2026-10-31 | The scheduler reads each run through `readRun`, which catches its summary up from the events before deciding anything | A process dying between the two writes left a stale summary, and the next scheduler repeated the event, was refused, and did so forever. The failover test caught it: repairing on append was not enough, because the append was what failed |
 | 2026-10-31 | `step_runs` holds each unit of work and its full output; `run_events` stays the timeline. Workers write only rows, and the scheduler derives lifecycle events by comparing rows with the summary | Items and leases need atomic per-row updates that a single summary document would turn into contention. One author per run keeps the timeline simple, and comparing state makes every pass safe to repeat after a crash. This settles where large outputs live: in full on the row, as a preview in the event |
 | 2026-10-31 | The scheduler is level-triggered and idempotent, so several can run at once | A crash or missed nudge only costs time; the next pass closes the gap. In-process nudges exist purely for latency |
 | 2026-10-31 | The queue uses a visibility timeout: claiming moves `visibleAt` forward by the lease | Expiry needs no reaper, because a dead worker's job simply becomes visible again |
 | 2026-10-31 | Each worker that takes a row raises its fencing token and can commit only under that value | A lease cannot stop a paused worker from waking up and writing. The check has to be at the write, not the claim |
 | 2026-10-31 | A job holds only the row id | All state stays in one place, so losing or duplicating a job costs nothing and any queue can be swapped in |
+| 2026-10-31 | BullMQ runs in manual fetch mode behind `StepQueue`; MongoDB stays the default (`ORCHALITE_QUEUE`) | The worker loop, leases and fencing stay the engine's own, so the two queues can be compared directly. BullMQ's retries and stalled limit stay out of the way, because the engine already counts both |
+| 2026-10-31 | The contract only promises that a lost job comes back, not when | The MongoDB queue returns one exactly at the end of its lease. BullMQ needs a stalled check to notice, up to two intervals later. That is the real difference between a visibility timeout and a lock with a sweeper |
+| 2026-10-31 | The scheduler re-enqueues active rows every 30 seconds | Redis can lose data that MongoDB would keep. Because rows are the truth and enqueueing is idempotent, a lost queue costs only time; a test flushes Redis mid-run and the run still finishes |
 | 2026-10-31 | `delay` throws `SuspendTask`: the job comes back at the wake-up time with `ctx.resumed` set; the cap rises to 90 days | A wait is a timestamp in the database, surviving restarts and holding no worker |
 | 2026-10-31 | The kill test runs compiled workers as real child processes and sends `SIGKILL` | An in-process stand-in cannot prove crash recovery (principle 3) |
 | 2026-10-31 | Any error is retryable unless the task throws `TerminalTaskError`; expressions and invalid params are always terminal, and HTTP 4xx is terminal except 408, 425 and 429 | Retrying is the safe default for unknown failures; what cannot change on a retry should fail at once |

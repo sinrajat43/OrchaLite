@@ -69,6 +69,7 @@ export class EngineService implements OnApplicationBootstrap, BeforeApplicationS
     await this.scheduler?.stop();
     await this.outbox?.stop();
     await this.election?.stop();
+    await this.queue.close?.();
     await this.telemetry.shutdown();
   }
 

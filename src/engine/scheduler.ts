@@ -2,7 +2,7 @@ import { Logger } from '@nestjs/common';
 import { isTruthy, resolveTemplate, Template } from '../expressions/template';
 import { TaskLookup } from '../orchestrator/task-registry.service';
 import { CompiledStep } from '../orchestrator/workflow-definition';
-import { capOutput, appendRunEvent } from '../runs/run-recorder';
+import { capOutput, appendRunEvent, readRun } from '../runs/run-recorder';
 import { DuplicateEventError, RunStore } from '../runs/run-store';
 import { IllegalTransitionError } from '../runs/run-projection';
 import { RunEventType, RunSummary } from '../runs/run.types';
@@ -22,7 +22,7 @@ export interface SchedulerDeps {
   queue: StepQueue;
   tasks: TaskLookup;
   signals: EngineSignals;
-  options: Pick<EngineOptions, 'schedulerIntervalMs' | 'runWindow' | 'taskLimits'>;
+  options: Pick<EngineOptions, 'schedulerIntervalMs' | 'runWindow' | 'taskLimits'> & Partial<Pick<EngineOptions, 'queueRestoreMs'>>;
   /** With several schedulers, only the leader acts; alone, it always does */
   isLeader?: () => boolean;
   telemetry?: Telemetry;
@@ -51,6 +51,7 @@ export class Scheduler {
   private unsubscribe?: () => void;
   /** At most one admission at a time in this process, or two could spend the same free slot */
   private admitting?: { promise: Promise<void>; again: boolean };
+  private lastRestore = Date.now();
   /** Which run admission starts with, moved on each time so no run is always first */
   private rotation = 0;
 
@@ -87,8 +88,27 @@ export class Scheduler {
       }
       // Slots may have freed up for runs that had no reason to be advanced
       await this.admit();
+      await this.restoreJobs();
     } catch (error) {
       this.logger.error(`Scheduler: ${(error as Error).message}`);
+    }
+  }
+
+  /**
+   * Puts back jobs the queue has lost. Rows are the truth and jobs only point at
+   * them, so a queue that loses its data, as Redis can, costs nothing but time.
+   * Enqueueing a job that is still there does nothing, so this is safe to repeat,
+   * and a worker still holding a step that is requeued is fenced out if replaced.
+   */
+  private async restoreJobs(): Promise<void> {
+    const { store, queue, options } = this.deps;
+    if (Date.now() - this.lastRestore < (options.queueRestoreMs ?? 30_000)) return;
+    this.lastRestore = Date.now();
+    for (const run of await store.findRunning()) {
+      for (const row of await store.listStepRuns(run.id)) {
+        if (row.fanOut || !['QUEUED', 'RUNNING', 'WAITING'].includes(row.status)) continue;
+        await queue.enqueue({ id: row.id, runId: row.runId }, row.notBefore ? new Date(row.notBefore) : undefined);
+      }
     }
   }
 
@@ -109,10 +129,10 @@ export class Scheduler {
           while (await this.pass(runId));
         } while (entry.again);
       } catch (error) {
-        // Lost a race with another writer, or a database error: the next tick tries again
-        if (!(error instanceof DuplicateEventError) && !(error instanceof IllegalTransitionError)) {
-          this.logger.error(`Scheduler: run ${runId}: ${(error as Error).message}`);
-        }
+        // Lost a race with another writer, or a database error: the next tick tries again.
+        // A race is rare and passes, so if this repeats for a run, that run is stuck
+        if (error instanceof IllegalTransitionError) this.logger.warn(`Scheduler: run ${runId}: ${error.message}`);
+        else if (!(error instanceof DuplicateEventError)) this.logger.error(`Scheduler: run ${runId}: ${(error as Error).message}`);
       } finally {
         this.advancing.delete(runId);
       }
@@ -124,7 +144,7 @@ export class Scheduler {
   /** @returns true if it changed something that may allow more progress */
   private async pass(runId: string): Promise<boolean> {
     const { store } = this.deps;
-    const run = await store.getRun(runId);
+    const run = await readRun(store, runId);
     if (!run || !['RUNNING', 'COMPENSATING', 'CANCELLING'].includes(run.status) || !run.execution) return false;
 
     let steps: Map<string, CompiledStep>;

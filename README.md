@@ -357,6 +357,10 @@ Any of them can be killed at any time without losing work.
 | Variable | Default | Means |
 | --- | --- | --- |
 | `ORCHALITE_ROLES` | `api,scheduler,worker` | What this process does |
+| `ORCHALITE_QUEUE` | `mongo` | The step queue: `mongo`, or `bullmq` to use Redis |
+| `REDIS_URL` | `redis://127.0.0.1:6379` | Where BullMQ finds Redis |
+| `ORCHALITE_STALLED_INTERVAL_MS` | 5000 | With BullMQ, how often to look for a dead worker's jobs; they return within two of these after the lease |
+| `ORCHALITE_QUEUE_RESTORE_MS` | 30000 | How often the scheduler puts back jobs a queue has lost |
 | `ORCHALITE_LEASE_MS` | 30000 | How soon a dead worker's step is picked up |
 | `ORCHALITE_WORKER_SLOTS` | 8 | Steps one worker process runs at a time |
 | `ORCHALITE_RUN_WINDOW` | 16 | Steps of one run in flight at a time |
@@ -385,7 +389,7 @@ src/
 │   ├── scheduler.ts              # Decides what happens next in each run
 │   ├── worker.ts                 # Runs steps under a lease: retries, timeouts, fencing
 │   ├── step-run.ts               # A unit of work and its states
-│   ├── step-queue.ts             # StepQueue port, with MongoDB and in-memory adapters
+│   ├── step-queue.ts             # StepQueue port, with MongoDB, BullMQ and in-memory adapters
 │   ├── rate-limiter.ts           # Connection rate limits (GCRA)
 │   ├── leader-lock.ts, leader-election.ts  # One scheduler leads
 │   ├── outbox.ts                 # Publishes run events
@@ -418,7 +422,9 @@ src/
 ```
 
 Tests that need MongoDB start a throwaway instance with `mongodb-memory-server`,
-using the `mongod` on the PATH when there is one.
+using the `mongod` on the PATH when there is one. BullMQ tests start a throwaway
+`redis-server` on a free port, and are skipped if there is none on the PATH,
+except in CI, where that is a failure.
 
 ## Adding New Tasks
 
@@ -468,8 +474,7 @@ the params as written.
 
 ## What comes next
 
-Horizon 1 of the [roadmap](docs/objective.md) is complete apart from the BullMQ
-adapter, which needs Redis. Horizon 2 is the event-driven core: Kafka, a Cassandra
+Horizon 1 of the [roadmap](docs/objective.md) is complete. Horizon 2 is the event-driven core: Kafka, a Cassandra
 adapter, and a separate read store.
 
 ## Contributing

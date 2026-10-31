@@ -1,4 +1,7 @@
 import { startTestMongo } from '../testing/mongo';
+import { redisAvailable, startTestRedis } from '../testing/redis';
+import { until } from '../testing/wait';
+import { BullMqStepQueue } from './bullmq-step-queue';
 import { InMemoryStepQueue } from './in-memory-step-queue';
 import { MongoStepQueue } from './mongo-step-queue';
 import { StepQueue } from './step-queue';
@@ -8,6 +11,24 @@ const job = (id: string) => ({ id, runId: 'r' });
 
 // Every adapter must behave the same, so the engine can treat them as one thing
 describe.each<[string, () => Promise<{ queue: StepQueue; stop: () => Promise<void> }>]>([
+  ...(redisAvailable()
+    ? [
+        [
+          'BullMQ',
+          async () => {
+            const redis = await startTestRedis();
+            const queue = new BullMqStepQueue(redis.url, 20);
+            return {
+              queue,
+              stop: async () => {
+                await queue.close();
+                await redis.stop();
+              },
+            };
+          },
+        ] as [string, () => Promise<{ queue: StepQueue; stop: () => Promise<void> }>],
+      ]
+    : []),
   ['in memory', async () => ({ queue: new InMemoryStepQueue(), stop: async () => undefined })],
   [
     'MongoDB',
@@ -57,9 +78,9 @@ describe.each<[string, () => Promise<{ queue: StepQueue; stop: () => Promise<voi
     const a = id();
     await queue.enqueue(job(a));
     const old = await queue.claim('dead', 30);
-    await sleep(50);
 
-    const next = await queue.claim('alive', 5000);
+    // How soon it returns after the lease differs by adapter; that it returns does not
+    const next = await until(() => queue.claim('alive', 5000), claim => claim !== null, 'the job to come back', 5000);
     expect(next.job.id).toBe(a);
     expect(await queue.extend(old, 5000)).toBe(false);
     await queue.ack(old);

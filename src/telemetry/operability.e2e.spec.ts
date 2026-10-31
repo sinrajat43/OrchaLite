@@ -240,7 +240,7 @@ describe('graceful shutdown', () => {
     jest.spyOn(console, 'log').mockImplementation(() => undefined);
     jest.spyOn(console, 'warn').mockImplementation(() => undefined);
     jest.spyOn(console, 'error').mockImplementation(() => undefined);
-    buildEngine();
+    buildEngine('operability');
     upstream = await startTestServer((req, res) => {
       if (req.url === '/quick') return void setTimeout(() => sendJson(res, 200, { ok: true }), 500);
       if (upstream.requests.filter(r => r.url === '/hang').length === 1) return void held.push(res);

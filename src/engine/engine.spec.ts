@@ -640,6 +640,27 @@ describe('failure semantics', () => {
   });
 });
 
+describe('a scheduler dying between its two writes', () => {
+  it.each([2, 3, 4])('carries on when the summary missed event %i', async lostSeq => {
+    jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    const store = new InMemoryRunStore();
+    const saveSummary = store.saveSummary.bind(store);
+    // The event landed and the summary write did not, as if the process died in between
+    let lost = false;
+    jest.spyOn(store, 'saveSummary').mockImplementation(async (summary, expected) => {
+      if (summary.lastSeq !== lostSeq || lost) return saveSummary(summary, expected);
+      lost = true;
+      return true;
+    });
+
+    const results = await runWorkflow(workflow([step('a', 't', [], { v: 1 })]), anyTasks, { ...quiet, store, runId: 'r' });
+
+    expect(results.status).toBe('SUCCEEDED');
+    expect((await store.getEvents('r')).map(e => e.type)).toEqual(['RunStarted', 'StepStarted', 'StepSucceeded', 'RunSucceeded']);
+    jest.restoreAllMocks();
+  });
+});
+
 describe('parallelism', () => {
   beforeAll(() => {
     jest.spyOn(console, 'log').mockImplementation(() => undefined);

@@ -22,7 +22,7 @@ describe('worker crash', () => {
     jest.spyOn(console, 'log').mockImplementation(() => undefined);
     jest.spyOn(console, 'error').mockImplementation(() => undefined);
     jest.spyOn(console, 'warn').mockImplementation(() => undefined);
-    buildEngine();
+    buildEngine('worker-crash');
 
     upstream = await startTestServer((_req, res) => {
       // The first call never answers, so the first worker is mid-step when it is killed

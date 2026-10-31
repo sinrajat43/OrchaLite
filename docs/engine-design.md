@@ -93,7 +93,9 @@ lease while the task runs, then commit under that fence and acknowledge.
 
 **The queue** only hands out row ids under a visibility timeout. Claiming moves a
 job's `visibleAt` forward by the lease, so a job whose worker dies just becomes
-visible again. Nothing needs to reap it.
+visible again. Nothing needs to reap it. With `ORCHALITE_QUEUE=bullmq` the same
+port runs on Redis, where a stalled check returns a dead worker's jobs instead,
+up to two intervals after the lease.
 
 ## What happens when things break
 
@@ -107,6 +109,7 @@ visible again. Nothing needs to reap it.
 | Two schedulers lead for a moment | Harmless: row inserts are idempotent, events claim a unique seq, and cron runs have idempotency keys. Limits may overshoot briefly |
 | Process dies between writing an event and its summary | The next append catches the summary up from the events |
 | Process dies between queueing a job and marking the row | The next pass queues it again, which changes nothing |
+| The queue loses its jobs (Redis without persistence) | The scheduler re-enqueues active rows every 30 seconds, and a job still there is unaffected |
 | Client repeats a request | An `Idempotency-Key` returns the first run |
 | Worker is deployed | It drains: no new work, a grace period for what is running, then hands the rest straight back |
 
@@ -183,4 +186,5 @@ Failure claims are tested by causing the failure (principle 3):
 | Cron survives losing its leader | `engine/leader.e2e.spec.ts`: `SIGKILL` to the leading scheduler process |
 | A run can be diagnosed from telemetry | `telemetry/operability.e2e.spec.ts` |
 | Shutdown drains, and hands back what outlasts it | `telemetry/operability.e2e.spec.ts`: `SIGTERM` to a worker process |
+| The whole engine works on BullMQ, through a killed worker and a flushed Redis | `engine/bullmq.e2e.spec.ts` |
 | All queue adapters behave the same | `engine/step-queue.spec.ts` |

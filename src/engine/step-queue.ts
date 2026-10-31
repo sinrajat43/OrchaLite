@@ -18,8 +18,8 @@ export interface Claim {
 /**
  * Hands out work with at-least-once delivery. A claimed job is invisible for
  * its lease; if it is not extended or acknowledged in time, it comes back and
- * another worker gets it. MongoDB by default; swappable because the engine only
- * talks to this interface.
+ * another worker gets it. How soon after the lease depends on the adapter. MongoDB
+ * by default; swappable because the engine only talks to this interface.
  */
 export interface StepQueue {
   /** Adds a job; does nothing if one with this id is already queued */
@@ -34,4 +34,6 @@ export interface StepQueue {
   release(claim: Claim, availableAt?: Date): Promise<void>;
   /** For monitoring: jobs ready to claim, delayed until later, and leased to a worker */
   depth(): Promise<{ ready: number; delayed: number; leased: number }>;
+  /** Lets go of connections the queue holds itself */
+  close?(): Promise<void>;
 }
