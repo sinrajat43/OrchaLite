@@ -1,7 +1,7 @@
 import { RunEvent, RunStatus, RunSummary, WorkflowRef } from './run.types';
 
 export interface StepOutcome {
-  status: 'pending' | 'running' | 'succeeded' | 'failed' | 'dead_lettered' | 'skipped';
+  status: 'pending' | 'running' | 'succeeded' | 'failed' | 'dead_lettered' | 'skipped' | 'cancelled';
   output?: unknown;
   iterations?: number;
   reason?: string;
@@ -22,7 +22,7 @@ export interface RunResult {
   steps: Record<string, StepOutcome>;
 }
 
-const TERMINAL: RunStatus[] = ['SUCCEEDED', 'FAILED', 'ABANDONED', 'COMPENSATED', 'COMPENSATION_FAILED'];
+const TERMINAL: RunStatus[] = ['SUCCEEDED', 'FAILED', 'ABANDONED', 'COMPENSATED', 'COMPENSATION_FAILED', 'CANCELLED'];
 
 export const isTerminal = (status: RunStatus): boolean => TERMINAL.includes(status);
 

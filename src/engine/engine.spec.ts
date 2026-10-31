@@ -186,6 +186,7 @@ describe('runWorkflow', () => {
   beforeAll(() => {
     jest.spyOn(console, 'log').mockImplementation(() => undefined);
     jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined);
   });
 
   afterAll(() => {

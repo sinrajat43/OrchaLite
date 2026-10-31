@@ -223,7 +223,7 @@ Returns the task catalogue: name, version, description, and the JSON Schemas of
 each task's params and output.
 
 ### POST /workflow/run
-Runs a workflow definition with the given input, inside the request.
+Starts a run of a workflow definition with the given input.
 
 **Request Body:**
 ```json
@@ -239,17 +239,51 @@ Runs a workflow definition with the given input, inside the request.
 }
 ```
 
-**Response:** `201` with the run id and each step's result:
+**Response:** `202` with the run id, once the run is accepted. Follow it with
+`GET /runs/:id/result`:
 
 ```json
-{ "runId": "…", "steps": {
+{ "runId": "…", "status": "RUNNING" }
+```
+
+With `?wait=true` the request stays open until the run ends, for up to 60
+seconds, and returns its result with `200`, the failed step with `500`, or the
+same `202` if the run is still going:
+
+```json
+{ "runId": "…", "status": "SUCCEEDED", "steps": {
     "step-id": { "status": "succeeded", "output": "…" },
     "each-step": { "status": "succeeded", "output": ["…"], "iterations": 1 },
     "later": { "status": "skipped", "reason": "when was false" } } }
 ```
 
 `400` lists every problem with the definition (`Invalid workflow definition`)
-or the input (`Invalid run input`). `500` names the step that failed.
+or the input (`Invalid run input`).
+
+An `Idempotency-Key` header makes a repeated request return the first run
+instead of starting another. Reusing a key for a different request is a `409`.
+
+### Step options
+
+```json
+{
+  "id": "charge",
+  "task": "http.request",
+  "params": { "method": "POST", "url": "https://pay.example/charge" },
+  "dependsOn": ["reserve"],
+  "retry": { "maxAttempts": 3, "backoffMs": 1000, "multiplier": 2, "maxBackoffMs": 60000 },
+  "timeoutMs": 10000,
+  "compensate": { "task": "http.request", "params": { "method": "POST", "url": "https://pay.example/refund", "body": { "id": "{{ steps.charge.output.body.id }}" } } }
+}
+```
+
+| Field | Means |
+| --- | --- |
+| `retry` | Tries in total, with exponential backoff and jitter. Once by default. Errors a task marks terminal, such as most HTTP 4xx, are not retried. Out of attempts, the step goes to `/dead-letters` |
+| `timeoutMs` | Limit for one attempt; 5 minutes by default. The task's `signal` is aborted |
+| `compensate` | Undoes this step if a later step fails. Finished steps are undone latest first, and the run ends `COMPENSATED`, or `COMPENSATION_FAILED` if an undo gives up |
+| `when`, `forEach` | Run the step conditionally, or once per item |
+| `concurrency` | On a `forEach` step: items in flight at once. On a definition: steps in flight across all its runs |
 
 ### Stored workflows
 
@@ -259,36 +293,83 @@ or the input (`Invalid run input`). `500` names the step that failed.
 | `GET /workflows` | Each name with its latest version and version count |
 | `GET /workflows/:name` | The latest version |
 | `GET /workflows/:name/versions`, `GET /workflows/:name/versions/:version` | History, and one version |
-| `POST /workflows/:name/runs` | Runs a stored version (`{ input, version? }`, latest by default) inside the request; the response adds `workflow: { name, version }` |
+| `POST /workflows/:name/runs` | Starts a run of a stored version (`{ input, version? }`, latest by default), the same way as `POST /workflow/run`; the response adds `workflow: { name, version }` |
 
 Versions are immutable. A unique index on `(name, version)` settles concurrent
 saves: each reads the latest version and tries to claim the next, and a loser
 reads again.
 
-### Run history
+### Runs
 
-Every run the engine accepts is recorded in MongoDB as it happens: an
-append-only timeline in `run_events` and one summary per run in
-`workflow_runs`, rebuilt from the events. Runs whose definition or input is
-rejected are not recorded. Runs left `RUNNING` by a server that stopped are
-marked `ABANDONED` on the next start. See [the design](docs/run-history-design.md).
+Every run the engine accepts is recorded in MongoDB: an append-only timeline in
+`run_events`, one summary per run in `workflow_runs`, and the work itself in
+`step_runs`. Runs whose definition or input is rejected are not recorded. See
+[the engine design](docs/engine-design.md) and
+[the history design](docs/run-history-design.md).
 
 | Endpoint | Does |
 | --- | --- |
 | `GET /runs?status=FAILED&name=...&limit=20&before=<runId>` | Run summaries, newest first; `before` pages to older runs |
-| `GET /runs/:id` | One run: status, input, the stored workflow version if any, and each step's status, timing, error or skip reason |
-| `GET /runs/:id/events` | The full timeline, including step outputs (over 256 KB, a preview is stored) |
+| `GET /runs/:id` | One run: status, input, the stored workflow version if any, and each step's status, timing, retries, error or skip reason |
+| `GET /runs/:id/result` | The run's status and each step's full output |
+| `GET /runs/:id/events` | The full timeline (outputs over 256 KB appear as a preview) |
+| `POST /runs/:id/cancel` | Skips what has not started and aborts what has; the run ends `CANCELLED`. Finished steps are not undone |
+| `POST /runs/:id/retry` | Runs a `FAILED` or `CANCELLED` run again from where it stopped; what succeeded stands |
+| `GET /dead-letters` | Steps the engine gave up on, and why |
+| `GET /metrics` | Prometheus metrics: queue depth, step latency, attempts by outcome, runs |
 
-The run id in a run's response (and in a failed step's `500`) is the id to use here.
+### Triggers
+
+| Endpoint | Does |
+| --- | --- |
+| `PUT /triggers/:name` | Creates or replaces a trigger on a stored workflow: `{ type: "cron", workflow, cron, input? }` or `{ type: "webhook", workflow, input?, secret? }`. A generated secret is returned once |
+| `GET /triggers`, `DELETE /triggers/:name` | Lists without secrets, deletes |
+| `POST /hooks/:name` | Delivers a signed event, starting a run. A repeated `X-Orchalite-Delivery` is one run |
+
+Cron is in UTC, with an optional leading seconds field. A webhook's `input` is a
+template over the delivery, such as `{ "order": "{{ body }}" }`; it defaults to
+`{ "body": "{{ body }}" }`. To sign a delivery, send the Unix time as
+`X-Orchalite-Timestamp` and, as `X-Orchalite-Signature`, `sha256=` plus the
+hex HMAC-SHA256 of `<timestamp>.<raw body>` with the secret.
 
 ### Connections and inbox
 
 | Endpoint | Does |
 | --- | --- |
-| `PUT /connections/:name` | Creates or replaces `{ type: "http", baseUrl, headers?, query? }`; returns only the names of secret values |
+| `PUT /connections/:name` | Creates or replaces `{ type: "http", baseUrl, headers?, query?, rateLimit?: { perSecond, burst? } }`; returns only the names of secret values. The rate limit is shared by every worker |
 | `GET /connections` | Lists connections without secrets |
 | `DELETE /connections/:name` | Deletes one |
 | `POST /inbox/:channel`, `GET /inbox`, `DELETE /inbox` | The local webhook inbox |
+
+## Running the engine
+
+One process does everything by default. To split it, start one process per role
+against the same MongoDB:
+
+```bash
+ORCHALITE_ROLES=api       node dist/main    # HTTP API and UI
+ORCHALITE_ROLES=scheduler node dist/main    # Run more than one; a leader is elected
+ORCHALITE_ROLES=worker    node dist/main    # Run as many as you need
+```
+
+Any of them can be killed at any time without losing work.
+
+| Variable | Default | Means |
+| --- | --- | --- |
+| `ORCHALITE_ROLES` | `api,scheduler,worker` | What this process does |
+| `ORCHALITE_LEASE_MS` | 30000 | How soon a dead worker's step is picked up |
+| `ORCHALITE_WORKER_SLOTS` | 8 | Steps one worker process runs at a time |
+| `ORCHALITE_RUN_WINDOW` | 16 | Steps of one run in flight at a time |
+| `ORCHALITE_TASK_LIMITS` | none | In-flight limits by task, as `http.request=10,mongo.insert=5` |
+| `ORCHALITE_STEP_TIMEOUT_MS` | 300000 | Limit for an attempt with no `timeoutMs` |
+| `ORCHALITE_MAX_LOST_DELIVERIES` | 5 | How many workers may vanish holding a step before it is dead-lettered |
+| `ORCHALITE_SHUTDOWN_GRACE_MS` | 20000 | How long a stopping worker lets steps finish |
+| `ORCHALITE_LEADER_TTL_MS` | 15000 | How soon a dead leader is replaced |
+| `ORCHALITE_SCHEDULER_INTERVAL_MS` | 500 | How often the scheduler looks over all active runs |
+| `ORCHALITE_WORKER_POLL_MS` | 250 | How often an idle worker looks for work |
+| `ORCHALITE_EVENTS_WEBHOOK_URL` | none | Where the outbox publishes run events |
+| `ORCHALITE_TRACES` | none | `otlp` (using `OTEL_EXPORTER_OTLP_ENDPOINT`) or `console` |
+| `ORCHALITE_METRICS_PORT` | none | Serves `/metrics` from a process with no API role |
 
 ## Project Structure
 
@@ -300,12 +381,23 @@ src/
 ├── definitions/            # /workflows: versioned definition store
 ├── connections/            # /connections: SecretBox (AES-256-GCM), service
 ├── inbox/                  # /inbox: local webhook target
+├── engine/                 # What makes runs durable
+│   ├── scheduler.ts              # Decides what happens next in each run
+│   ├── worker.ts                 # Runs steps under a lease: retries, timeouts, fencing
+│   ├── step-run.ts               # A unit of work and its states
+│   ├── step-queue.ts             # StepQueue port, with MongoDB and in-memory adapters
+│   ├── rate-limiter.ts           # Connection rate limits (GCRA)
+│   ├── leader-lock.ts, leader-election.ts  # One scheduler leads
+│   ├── outbox.ts                 # Publishes run events
+│   └── engine.service.ts         # Starts this process's roles
 ├── runs/                   # /runs: run history as events plus a summary per run
-│   ├── run-recorder.ts           # Turns runner hooks into events; closes abandoned runs
-│   ├── run-projection.ts         # Pure fold of events into a summary
+│   ├── run-recorder.ts           # Appends events with optimistic concurrency
+│   ├── run-projection.ts         # Pure fold of events into a summary; the state machine
 │   ├── run-store.ts              # RunStore port
-│   ├── mongo-run-store.ts        # run_events, workflow_runs
+│   ├── mongo-run-store.ts        # run_events, workflow_runs, step_runs
 │   └── in-memory-run-store.ts    # For tests
+├── triggers/               # /triggers and /hooks: cron and signed webhooks
+├── telemetry/              # Structured logs, traces, metrics
 ├── workflows/              # HTTP API
 │   ├── workflow.controller.ts    # POST /workflow/run
 │   ├── tasks.controller.ts       # GET /tasks
@@ -313,7 +405,6 @@ src/
 │   └── dto/workflow.dto.ts
 ├── orchestrator/           # Workflow engine
 │   ├── workflow-definition.ts    # Validates and compiles a definition
-│   ├── task-runner.util.ts       # Runs a compiled workflow
 │   ├── task-registry.service.ts  # Discovers @TaskHandler providers
 │   └── schema-validator.ts       # Ajv
 ├── expressions/
@@ -360,7 +451,10 @@ export class GreetTask implements Task<GreetParams, string> {
 ```
 
 The context also carries an abort `signal`, the `attempt` number and an
-`idempotencyKey` stable per run and step. Params are validated against
+`idempotencyKey` stable per run and step across retries. A step can run more than
+once, so use that key to make side effects safe to repeat. Throw
+`TerminalTaskError` for a failure a retry cannot fix, and `SuspendTask` to wait
+without holding a worker. Params are validated against
 `paramsSchema` before `execute` runs, with defaults filled in. For checks a
 schema cannot express, implement `validate(params)`; it runs at submit time on
 the params as written.
@@ -369,15 +463,14 @@ the params as written.
 
 - `400 Invalid workflow definition` lists every problem with a definition at once
 - `400 Invalid run input` lists every problem with the input
-- `500` names the step that failed (`stepId`, `task`), why, and the `runId` to look up in `/runs`
+- `409` for a key reused on a different request, or an action a run's state does not allow
+- With `?wait=true`, `500` names the step that failed (`stepId`, `task`), why, how the run ended, and the `runId` to look up in `/runs`
 
 ## What comes next
 
-Runs still happen inside the HTTP request. They are recorded as they go, but a
-run interrupted by a crash is only marked `ABANDONED`, not resumed. Phase B of
-the [roadmap](docs/objective.md) makes them durable: asynchronous runs, a
-scheduler and workers with leases, retries and timeouts, parallelism, sagas,
-triggers, and observability.
+Horizon 1 of the [roadmap](docs/objective.md) is complete apart from the BullMQ
+adapter, which needs Redis. Horizon 2 is the event-driven core: Kafka, a Cassandra
+adapter, and a separate read store.
 
 ## Contributing
 

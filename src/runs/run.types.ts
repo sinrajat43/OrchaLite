@@ -1,7 +1,7 @@
-export const RUN_STATUSES = ['RUNNING', 'SUCCEEDED', 'FAILED', 'ABANDONED', 'COMPENSATING', 'COMPENSATED', 'COMPENSATION_FAILED'] as const;
+export const RUN_STATUSES = ['RUNNING', 'SUCCEEDED', 'FAILED', 'ABANDONED', 'COMPENSATING', 'COMPENSATED', 'COMPENSATION_FAILED', 'CANCELLING', 'CANCELLED'] as const;
 export type RunStatus = typeof RUN_STATUSES[number];
 
-export type StepStatus = 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'DEAD_LETTERED' | 'SKIPPED';
+export type StepStatus = 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'DEAD_LETTERED' | 'SKIPPED' | 'CANCELLED';
 
 export type RunEventType =
   | 'RunStarted'
@@ -18,7 +18,11 @@ export type RunEventType =
   | 'CompensationSucceeded'
   | 'CompensationFailed'
   | 'RunCompensated'
-  | 'RunCompensationFailed';
+  | 'RunCompensationFailed'
+  | 'RunCancelling'
+  | 'StepCancelled'
+  | 'RunCancelled'
+  | 'RunRetried';
 
 /**
  * One immutable entry in a run's timeline. Events are the source of truth;

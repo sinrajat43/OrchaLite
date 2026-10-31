@@ -32,4 +32,6 @@ export interface StepQueue {
   ack(claim: Claim): Promise<void>;
   /** Gives the job back, to be delivered at availableAt (now by default) */
   release(claim: Claim, availableAt?: Date): Promise<void>;
+  /** For monitoring: jobs ready to claim, delayed until later, and leased to a worker */
+  depth(): Promise<{ ready: number; delayed: number; leased: number }>;
 }

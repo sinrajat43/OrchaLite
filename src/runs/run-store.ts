@@ -41,6 +41,9 @@ export interface RunStore {
    * @returns the updated row, or null if the expectation failed and nothing changed
    */
   updateStepRun(id: string, expected: StepRunExpectation, changes: Partial<StepRun>, options?: StepRunUpdateOptions): Promise<StepRun | null>;
+  /** Removes the rows of a run that did not succeed, so they can run again */
+  deleteUnfinishedWork(runId: string): Promise<void>;
+  countActiveRuns(): Promise<number>;
   /** PENDING rows, up to perRun of each run with any, lowest forEach index first, without outputs */
   listPending(perRun: number): Promise<StepRun[]>;
   /**

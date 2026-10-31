@@ -549,6 +549,8 @@ function makeDraft(definition, extra = {}) {
 }
 
 /** Keeps only what the server accepts, with defaults for missing parts */
+const CARRIED_STEP_FIELDS = ['retry', 'timeoutMs', 'concurrency', 'compensate'];
+
 function normalizeDefinition(raw) {
   return {
     name: typeof raw?.name === 'string' && raw.name ? raw.name : 'untitled-workflow',
@@ -560,23 +562,31 @@ function normalizeDefinition(raw) {
       dependsOn: Array.isArray(step?.dependsOn) ? step.dependsOn.map(String) : [],
       ...(typeof step?.when === 'string' && step.when ? { when: step.when } : {}),
       ...(typeof step?.forEach === 'string' && step.forEach ? { forEach: step.forEach } : {}),
+      // Not editable on the canvas yet, so carried through untouched rather than lost on save
+      ...Object.fromEntries(CARRIED_STEP_FIELDS.filter(field => step?.[field] !== undefined).map(field => [field, clone(step[field])])),
     })) : [],
+    ...(raw?.concurrency !== undefined ? { concurrency: raw.concurrency } : {}),
   };
 }
 
 /** The definition as sent to the server: empty input and params left out */
 function exportDefinition() {
-  const { name, input, steps } = state.plan.definition;
+  const { name, input, steps, concurrency } = state.plan.definition;
   const out = { name };
   if (Object.keys(input).length) out.input = clone(input);
-  out.steps = steps.map(({ id, task, params, dependsOn, when, forEach }) => ({
-    id,
-    task,
-    ...(params && Object.keys(params).length ? { params: clone(params) } : {}),
-    dependsOn: [...dependsOn],
-    ...(when ? { when } : {}),
-    ...(forEach ? { forEach } : {}),
-  }));
+  if (concurrency !== undefined) out.concurrency = concurrency;
+  out.steps = steps.map(step => {
+    const { id, task, params, dependsOn, when, forEach } = step;
+    return {
+      id,
+      task,
+      ...(params && Object.keys(params).length ? { params: clone(params) } : {}),
+      dependsOn: [...dependsOn],
+      ...(when ? { when } : {}),
+      ...(forEach ? { forEach } : {}),
+      ...Object.fromEntries(CARRIED_STEP_FIELDS.filter(field => step[field] !== undefined).map(field => [field, clone(step[field])])),
+    };
+  });
   return out;
 }
 
@@ -1918,7 +1928,7 @@ async function followRun(runId, onProgress) {
   for (;;) {
     const r = await api('GET', `/runs/${runId}/result`);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    if (r.body.status !== 'RUNNING' && r.body.status !== 'COMPENSATING') return r.body;
+    if (!['RUNNING', 'COMPENSATING', 'CANCELLING'].includes(r.body.status)) return r.body;
     onProgress(r.body);
     await new Promise(resolve => setTimeout(resolve, 300));
   }

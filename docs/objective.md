@@ -5,7 +5,7 @@ when starting a stage, tick items off as they land, and record decisions in the
 log at the bottom. Diagrams of the current and target architecture are in
 [architecture.md](architecture.md).
 
-Last updated: 2026-10-25 (end of phase A)
+Last updated: 2026-10-31 (end of phase B)
 
 The doc works at two levels:
 
@@ -100,7 +100,9 @@ part by hand and understanding why those tools are designed the way they are.
 
 ## Where the project is today
 
-As of 2026-10-25, phase A (generality) is done; 113 Jest tests pass.
+As of 2026-10-31, phases A and B are done, so horizon 1 is complete apart from
+the BullMQ adapter (see B2). See [engine-design.md](engine-design.md) for how the
+durable engine works.
 
 - Workflows are JSON definitions with declared `input`, `{{ }}` JSONata
   expressions over input and upstream outputs, and `when` and `forEach` on
@@ -108,33 +110,29 @@ As of 2026-10-25, phase A (generality) is done; 113 Jest tests pass.
   expressions and what they reference, input schema, params schemas.
 - Tasks are `@TaskHandler` classes found through Nest's `DiscoveryService`,
   each with TypeBox (JSON Schema) params and output, listed at `GET /tasks`.
-  The built-ins are generic: `http.request`, `transform`, `filter`,
-  `mongo.insert`, `mongo.findOne`, `mongo.upsert`, `notify.webhook`, `delay`.
 - Definitions can be stored as immutable versions (`/workflows`) and run by
   name. Credentials live in encrypted connections (`/connections`).
-- The web UI edits, graphs, runs and stores workflows, manages connections,
-  and shows a local webhook inbox. Its examples include the uptime alert and
-  release watcher use cases, which an end-to-end test runs.
-- Every accepted run is recorded as it happens (a first slice of B1): an
-  append-only `run_events` timeline plus a `workflow_runs` summary rebuilt from
-  it, with the input and the stored version that ran. `GET /runs` lists and
-  filters them, and the UI has a run history panel with a step timeline. Runs
-  left `RUNNING` by a dead process are marked `ABANDONED` on restart.
-- A canvas builder (`/builder.html`) edits stored workflows as plans: drag and
-  connect steps, params forms from task schemas, run-input declarations and a
-  checked run form, versions, upload and download.
+- A run request returns `202`. The API records the run, a leader-elected
+  scheduler decides what is ready, and workers claim steps under a lease. Each
+  part can be its own process (`ORCHALITE_ROLES`), and killing any of them loses
+  no work.
+- Steps can retry with backoff, time out, wait durably, run in parallel under
+  limits, and undo earlier steps when a later one fails. Side effects are made
+  safe to repeat with idempotency keys.
+- Cron and signed webhook triggers start runs, and run events are published
+  through an outbox.
+- Logs, traces and metrics cover every attempt, and runs can be cancelled or
+  retried from where they failed.
+- The web UI edits, graphs, runs and stores workflows, follows runs live, and
+  shows their history; a canvas builder (`/builder.html`) edits stored plans.
 
-Still true, and the subject of phase B:
+Known limits, none blocking horizon 1:
 
-- A run happens inside the HTTP request, one step (and one `forEach` item) at
-  a time. History is recorded, but a run cut short by a crash or client
-  timeout is only marked `ABANDONED`, never resumed.
-- The first failing step aborts the run with a 500, and the outputs of steps
-  that already succeeded are dropped.
-- No retries or timeouts: `signal` is never aborted and `attempt` is always 1.
-- `delay` holds the request open and is capped at 60 seconds.
-
-In short: a general, declarative workflow engine that is not yet durable.
+- Triggers have an API only; neither UI page manages them yet.
+- Each pass of the scheduler reads all of a run's rows, so very large fan-outs
+  spend most of their time in scheduling.
+- A workflow's `concurrency` limits steps in flight, not overlapping runs.
+- Idempotency keys never expire.
 
 ## Target design
 
@@ -283,11 +281,11 @@ decide what a persisted step record has to store.
   - Done when: the webhook automation use case rolls back cleanly when its
     last step fails.
 
-- [ ] **B6. Operability**
+- [x] **B6. Operability** (done 2026-10-31)
   - Build: structured logs with run and step correlation ids; OpenTelemetry
-    traces with one span per step; metrics for queue depth, step latency and
-    retry rate; graceful shutdown that drains in-flight steps; endpoints to
-    cancel a run and retry from the failed step.
+    traces with one span per attempt (`ORCHALITE_TRACES`); `GET /metrics` for
+    queue depth, step latency and retry rate; graceful shutdown that drains
+    in-flight steps; `POST /runs/:id/cancel` and `POST /runs/:id/retry`.
   - Teaches: what it takes to run and debug a distributed system in
     production.
   - Done when: a failed run can be diagnosed from telemetry alone, without
@@ -329,9 +327,9 @@ Several of these come back in later horizons, noted on each item.
 
 | Decision | Options | Leaning |
 | --- | --- | --- |
-| Where large step outputs live (needed for B1) | inline in `step_runs`, separate collection, object storage | Inline in the `StepSucceeded` event for now, with outputs over 256 KB stored as a preview; revisit with B1's async runs |
+| Where large step outputs live (needed for B1) | inline in `step_runs`, separate collection, object storage | Decided 2026-10-31: in full on the row, up to 8 MB; a preview over 256 KB in the event |
 | Run history model (needed for B1) | mutable status documents, append-only events with status derived from them | Decided 2026-10-25: event-sourced (`run_events`) with a projected summary (`workflow_runs`) |
-| Try Kafka as the step dispatch queue in B2 | yes as a side experiment, no | Open. Its limits with retries and delays are a useful lesson, but it is not the queue to keep |
+| Try Kafka as the step dispatch queue | yes as a side experiment, no | Open, and not attempted in B2. Its limits with retries and delays are a useful lesson, but it is not the queue to keep. The `StepQueue` contract tests would show those limits directly |
 
 ## Decision log
 
@@ -396,3 +394,9 @@ Several of these come back in later horizons, noted on each item.
 | 2026-10-31 | A cron run's idempotency key names its scheduled time; a trigger that missed several times fires once. Cron is UTC, with an optional seconds field | Moving the trigger on and starting the run cannot be atomic, and the key makes that safe. A burst of catch-up runs after an outage is rarely what anyone wants |
 | 2026-10-31 | Webhook signatures are HMAC-SHA256 over `timestamp.rawBody`, compared in constant time, with 5 minutes of tolerance; secrets are encrypted at rest and a generated one is shown once | Signing the exact bytes received means re-serialising cannot break it or hide a change, and the timestamp limits replay. A repeated delivery id is one run |
 | 2026-10-31 | `run_events` is the outbox, with a `published` flag behind a partial index; a relay publishes at-least-once to a webhook, with Kafka as a later adapter | The usual outbox exists to write a change and its event atomically. In an event log they are one insert, so no transaction is needed. Consumers deduplicate by `(runId, seq)` |
+| 2026-10-31 | A run's trace id is a hash of its id, and the run's span id another; step spans name that as a remote parent, and the scheduler writes the run span at the end | Spans from separate processes join one trace with nothing passed between them, so a job only ever needs the row id |
+| 2026-10-31 | One span per attempt rather than per step; logs are JSON lines with `runId`, `stepId` and `traceId`; neither carries params or outputs | Retries are what you need to see in a failure. Params can hold secrets, and logs travel further than the database |
+| 2026-10-31 | Metrics use `prom-client`, with gauges read from the database at scrape time; a process with no API can expose them through `ORCHALITE_METRICS_PORT` | The lesson is in what to measure, not the text format. Reading depth at scrape time means it cannot drift |
+| 2026-10-31 | Shutdown drains: no new work, running steps get a grace period (20 seconds), then are aborted and handed straight back, using no attempt | Deploys are routine and should not look like crashes, or make anything wait out a lease |
+| 2026-10-31 | Cancelling skips what has not started and aborts what has, through a flag workers check every second; it does not run compensations | Cancel means stop. Whether to reverse finished work is a separate decision, and no use case has needed it yet |
+| 2026-10-31 | Retrying a run deletes the rows that did not succeed and lets the scheduler plan them again, for `FAILED` and `CANCELLED` runs only; idempotency keys stay the same | Planning is already idempotent, so succeeded steps and forEach items stand with no extra code. A `COMPENSATED` run has been undone, so running its tail again would act on state that is gone. An unchanged key means a step that did take effect is not done twice |

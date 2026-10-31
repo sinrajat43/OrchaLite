@@ -4,6 +4,7 @@ import { hostname } from 'os';
 import { ConnectionsService } from '../connections/connections.service';
 import { TaskRegistry } from '../orchestrator/task-registry.service';
 import { RUN_STORE, RunStore } from '../runs/run-store';
+import { TELEMETRY, Telemetry } from '../telemetry/telemetry';
 import { appendRunEvent } from '../runs/run-recorder';
 import { ENGINE_OPTIONS, EngineOptions } from './engine-options';
 import { EngineSignals } from './engine-signals';
@@ -34,13 +35,15 @@ export class EngineService implements OnApplicationBootstrap, BeforeApplicationS
     @Inject(LEADER_LOCK) private readonly lock: LeaderLock,
     @Inject(ENGINE_OPTIONS) private readonly options: EngineOptions,
     private readonly leader: LeaderState,
+    @Inject(TELEMETRY) private readonly telemetry: Telemetry,
     private readonly tasks: TaskRegistry,
     private readonly connections: ConnectionsService,
     private readonly signals: EngineSignals
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
-    const { store, queue, limiter, tasks, connections, signals, options } = this;
+    const { store, queue, limiter, tasks, connections, signals, options, telemetry } = this;
+    telemetry.onCollect(async () => ({ queue: await queue.depth(), activeRuns: await store.countActiveRuns() }));
     if (options.roles.includes('scheduler')) {
       await this.abandonLegacyRuns();
       // Several schedulers can run for failover; the one holding the lock does the work
@@ -48,7 +51,7 @@ export class EngineService implements OnApplicationBootstrap, BeforeApplicationS
       this.leader.source = this.election;
       await this.election.start();
       const isLeader = () => this.election.isLeader;
-      this.scheduler = new Scheduler({ store, queue, tasks, signals, options, isLeader });
+      this.scheduler = new Scheduler({ store, queue, tasks, signals, options, isLeader, telemetry });
       this.scheduler.start();
       if (options.eventsWebhookUrl) {
         this.outbox = new OutboxRelay(store, new WebhookEventPublisher(options.eventsWebhookUrl), options.schedulerIntervalMs, isLeader);
@@ -56,7 +59,7 @@ export class EngineService implements OnApplicationBootstrap, BeforeApplicationS
       }
     }
     if (options.roles.includes('worker')) {
-      this.worker = new Worker({ store, queue, tasks, connections, limiter, signals, options });
+      this.worker = new Worker({ store, queue, tasks, connections, limiter, signals, options, telemetry });
       this.worker.start();
     }
   }
@@ -66,6 +69,7 @@ export class EngineService implements OnApplicationBootstrap, BeforeApplicationS
     await this.scheduler?.stop();
     await this.outbox?.stop();
     await this.election?.stop();
+    await this.telemetry.shutdown();
   }
 
   /**

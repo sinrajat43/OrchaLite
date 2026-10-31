@@ -8,6 +8,9 @@ const RUN_TRANSITIONS: Partial<Record<RunEventType, RunStatus[]>> = {
   RunCompensating: ['RUNNING'],
   RunCompensated: ['COMPENSATING'],
   RunCompensationFailed: ['COMPENSATING'],
+  RunCancelling: ['RUNNING'],
+  RunCancelled: ['CANCELLING'],
+  RunRetried: ['FAILED', 'CANCELLED'],
 };
 
 /** Which status an event may move a step from */
@@ -16,6 +19,7 @@ const STEP_TRANSITIONS: Partial<Record<RunEventType, StepStatus[]>> = {
   StepSucceeded: ['RUNNING'],
   StepFailed: ['RUNNING'],
   StepSkipped: ['PENDING', 'RUNNING'],
+  StepCancelled: ['RUNNING'],
 };
 
 const RUN_ENDINGS: Partial<Record<RunEventType, RunStatus>> = {
@@ -24,6 +28,7 @@ const RUN_ENDINGS: Partial<Record<RunEventType, RunStatus>> = {
   RunAbandoned: 'ABANDONED',
   RunCompensated: 'COMPENSATED',
   RunCompensationFailed: 'COMPENSATION_FAILED',
+  RunCancelled: 'CANCELLED',
 };
 
 /**
@@ -96,6 +101,19 @@ export function applyEvent(summary: RunSummary | null, event: RunEvent): RunSumm
     return next;
   }
 
+  if (event.type === 'RunCancelling') {
+    next.status = 'CANCELLING';
+    return next;
+  }
+
+  // Back to work: what succeeded stands, and everything else gets another go
+  if (event.type === 'RunRetried') {
+    next.status = 'RUNNING';
+    for (const field of ['endedAt', 'durationMs', 'failedStepId', 'error'] as const) delete next[field];
+    next.steps = next.steps.map(step => (step.status === 'SUCCEEDED' ? step : { id: step.id, task: step.task, status: 'PENDING' }));
+    return next;
+  }
+
   // The run failed, and steps are being undone: it keeps why, and ends only once that is over
   if (event.type === 'RunCompensating') {
     next.status = 'COMPENSATING';
@@ -131,8 +149,14 @@ export function applyEvent(summary: RunSummary | null, event: RunEvent): RunSumm
       if (s.startedAt) Object.assign(s, { endedAt: event.at, durationMs: msBetween(s.startedAt, event.at) });
       break;
     }
+    case 'StepCancelled': {
+      const s = step();
+      Object.assign(s, { status: 'CANCELLED', endedAt: event.at, durationMs: msBetween(s.startedAt, event.at) });
+      break;
+    }
     case 'RunSucceeded':
     case 'RunFailed':
+    case 'RunCancelled':
     case 'RunAbandoned':
     case 'RunCompensated':
     case 'RunCompensationFailed':

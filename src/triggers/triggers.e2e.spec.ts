@@ -63,6 +63,7 @@ describe('webhook automation with rollback', () => {
   beforeAll(async () => {
     jest.spyOn(console, 'log').mockImplementation(() => undefined);
     jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined);
 
     crm = await startTestServer((req, res) => sendJson(res, 200, { id: req.url.split('/').pop(), tier: 'gold' }));
     inventory = await startTestServer((req, res) => {

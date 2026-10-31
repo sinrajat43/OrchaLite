@@ -6,6 +6,7 @@ describe('run history across a restart', () => {
   beforeAll(async () => {
     jest.spyOn(console, 'log').mockImplementation(() => undefined);
     jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined);
     api = await startTestApi();
   }, 60_000);
 

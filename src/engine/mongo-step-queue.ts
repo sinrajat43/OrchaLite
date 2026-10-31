@@ -55,4 +55,15 @@ export class MongoStepQueue implements StepQueue {
   async release({ job, token }: Claim, availableAt = new Date()): Promise<void> {
     await QueuedJobModel.updateOne({ _id: job.id, token }, { $set: { visibleAt: availableAt }, $unset: { token: 1, owner: 1 } });
   }
+
+  async depth(): Promise<{ ready: number; delayed: number; leased: number }> {
+    const now = new Date();
+    const [ready, delayed, leased] = await Promise.all([
+      // A lease that ran out counts as ready: anyone can claim that job now
+      QueuedJobModel.countDocuments({ visibleAt: { $lte: now } }),
+      QueuedJobModel.countDocuments({ visibleAt: { $gt: now }, token: null }),
+      QueuedJobModel.countDocuments({ visibleAt: { $gt: now }, token: { $ne: null } }),
+    ]);
+    return { ready, delayed, leased };
+  }
 }

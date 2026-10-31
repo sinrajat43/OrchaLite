@@ -15,6 +15,7 @@ describe('failure semantics', () => {
   beforeAll(async () => {
     jest.spyOn(console, 'log').mockImplementation(() => undefined);
     jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined);
 
     // A payment API that recognises repeats by key, and goes wrong AFTER doing the
     // work, the case where a naive retry would charge twice

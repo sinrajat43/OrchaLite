@@ -170,10 +170,14 @@ Both are single static files with no build step. See [builder.md](builder.md).
 
 ## 6. Known limits
 
+Sections 2 to 4 above were written before phase B. For how runs execute now, with
+the scheduler, workers and queue, see [engine-design.md](engine-design.md).
+
 | Area | Limit | Roadmap |
 | --- | --- | --- |
-| Durability | Runs execute inside the request; a crash ends a run, which is then marked `ABANDONED`, not resumed | B1, B2 |
-| Execution | One step and one `forEach` item at a time | B4 |
-| Failure handling | No retries or timeouts; the first failure aborts the run | B3 |
+| Queue | MongoDB only; the BullMQ adapter is not built | B2 |
+| Triggers | API only, with no UI | Not planned yet |
+| Scheduling cost | Each pass reads all of a run's rows, so very large fan-outs spend most of their time here | Not planned yet |
+| Overlapping runs | A workflow's `concurrency` limits steps, not runs | Open |
 | Stored workflows | Versions cannot be deleted | Not planned yet |
-| Builder | Drafts and layout are per browser; no undo or zoom | Horizon 4 for the full editor |
+| Builder | Drafts and layout are per browser; no undo or zoom; retry, timeout and compensate are kept in a definition but cannot be edited on the canvas | Horizon 4 for the full editor |

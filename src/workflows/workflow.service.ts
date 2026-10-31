@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Inject, Injectable, InternalServerErrorException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Inject, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
 import { createHash } from 'crypto';
 import { Response } from 'express';
 import { Types } from 'mongoose';
@@ -9,7 +9,7 @@ import { IllegalTransitionError } from '../runs/run-projection';
 import { appendRunEvent } from '../runs/run-recorder';
 import { isTerminal, RunResult, toRunResult } from '../runs/run-result';
 import { RUN_STORE, RunStore } from '../runs/run-store';
-import { RunStatus, WorkflowRef } from '../runs/run.types';
+import { RunEventType, RunStatus, RunSummary, WorkflowRef } from '../runs/run.types';
 
 /**
  * Maps engine errors to HTTP errors
@@ -117,6 +117,52 @@ export class WorkflowService {
     }
     response.status(200);
     return result;
+  }
+
+  /**
+   * Asks a run to stop. It ends as CANCELLED once running steps have aborted.
+   * @throws NotFoundException if there is no such run
+   * @throws ConflictException if it has already ended
+   */
+  async cancel(runId: string): Promise<AcceptedRun> {
+    await this.requireRun(runId);
+    const summary = await this.transition(runId, 'RunCancelling', 'cancel');
+    this.signals.runChanged(runId);
+    return { runId, status: summary.status };
+  }
+
+  /**
+   * Runs a failed or cancelled run again from where it stopped: what succeeded
+   * stands, keeping its outputs, and everything else gets a new go.
+   * @throws NotFoundException if there is no such run
+   * @throws ConflictException unless it ended as FAILED or CANCELLED
+   */
+  async retry(runId: string): Promise<AcceptedRun> {
+    const run = await this.requireRun(runId);
+    if (run.status !== 'FAILED' && run.status !== 'CANCELLED') {
+      throw new ConflictException(`A ${run.status} run cannot be retried`);
+    }
+    // Rows first: if this dies before the event, the run is still ended, and retrying again works
+    await this.runs.deleteUnfinishedWork(runId);
+    const summary = await this.transition(runId, 'RunRetried', 'retry');
+    this.signals.runChanged(runId);
+    return { runId, status: summary.status };
+  }
+
+  private async requireRun(runId: string): Promise<RunSummary> {
+    const run = await this.runs.getRun(runId);
+    if (!run) throw new NotFoundException(`Run ${runId} not found`);
+    return run;
+  }
+
+  private async transition(runId: string, type: RunEventType, action: string): Promise<RunSummary> {
+    try {
+      return await appendRunEvent(this.runs, runId, type, {});
+    } catch (error) {
+      if (!(error instanceof IllegalTransitionError)) throw error;
+      const { status } = await this.requireRun(runId);
+      throw new ConflictException(`A ${status} run cannot ${action === 'cancel' ? 'be cancelled' : 'be retried'}`);
+    }
   }
 
   private async waitForResult(runId: string): Promise<RunResult | null> {

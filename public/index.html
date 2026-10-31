@@ -250,7 +250,8 @@
   }
   .run-badge.SUCCEEDED { background: var(--ok-bg); color: var(--ok); border-color: transparent; }
   .run-badge.FAILED { background: var(--bad-bg); color: var(--bad); border-color: transparent; }
-  .run-badge.RUNNING { color: var(--accent); border-color: var(--accent); }
+  .run-badge.RUNNING, .run-badge.COMPENSATING, .run-badge.CANCELLING { color: var(--accent); border-color: var(--accent); }
+  .run-badge.DEAD_LETTERED, .run-badge.COMPENSATION_FAILED { background: var(--bad-bg); color: var(--bad); border-color: transparent; }
   .banner.neutral { background: var(--code-bg); color: var(--text); }
   .timeline { display: grid; gap: 6px; margin: 4px 0 12px; }
   .tl-row { display: grid; grid-template-columns: minmax(80px, 140px) minmax(0, 1fr) 64px; gap: 10px; align-items: center; }
@@ -402,6 +403,11 @@
             <option>SUCCEEDED</option>
             <option>FAILED</option>
             <option>RUNNING</option>
+            <option>COMPENSATING</option>
+            <option>COMPENSATED</option>
+            <option>COMPENSATION_FAILED</option>
+            <option>CANCELLING</option>
+            <option>CANCELLED</option>
             <option>ABANDONED</option>
           </select>
           <button id="historyRefresh" type="button">Refresh</button>
@@ -797,8 +803,8 @@ async function run(storedName) {
   }
 }
 
-const STEP_STATE = { pending: undefined, running: 'running', succeeded: 'done', failed: 'failed', skipped: 'skipped' };
-const RUN_ACTIVE = ['RUNNING', 'COMPENSATING'];
+const STEP_STATE = { pending: undefined, running: 'running', succeeded: 'done', failed: 'failed', dead_lettered: 'failed', skipped: 'skipped', cancelled: 'skipped' };
+const RUN_ACTIVE = ['RUNNING', 'COMPENSATING', 'CANCELLING'];
 
 /** Polls a run until it ends, reporting its progress; returns the final result */
 async function followRun(runId, onProgress) {
@@ -925,7 +931,7 @@ async function showRun(runId) {
       if (event.type === 'StepSucceeded') outputs[event.data.stepId] = event.data.output;
     }
 
-    const kind = run.status === 'SUCCEEDED' ? 'ok' : run.status === 'FAILED' ? 'bad' : 'neutral';
+    const kind = run.status === 'SUCCEEDED' ? 'ok' : ['FAILED', 'COMPENSATION_FAILED'].includes(run.status) ? 'bad' : 'neutral';
     const headline = `${run.name}: ${run.status.toLowerCase()}` +
       (run.durationMs != null ? ` in ${formatMs(run.durationMs)}` : '') +
       ` · started ${formatTime(run.startedAt)}`;
@@ -935,8 +941,20 @@ async function showRun(runId) {
     const load = el('button', { type: 'button', textContent: 'Load into editor' });
     load.addEventListener('click', () => loadIntoEditor(run));
     const where = run.workflow ? ` · stored workflow ${run.workflow.name} v${run.workflow.version}` : ' · ad-hoc run';
+    const runAction = (label, path) => {
+      const button = el('button', { type: 'button', textContent: label });
+      button.addEventListener('click', async () => {
+        button.disabled = true;
+        await fetch(`/runs/${run.id}/${path}`, { method: 'POST' });
+        loadHistory();
+        showRun(run.id);
+      });
+      return button;
+    };
     const actions = el('div', { className: 'row', style: 'margin-bottom: 12px' }, [
       load,
+      ...(run.status === 'RUNNING' ? [runAction('Cancel run', 'cancel')] : []),
+      ...(['FAILED', 'CANCELLED'].includes(run.status) ? [runAction('Retry from failed step', 'retry')] : []),
       el('span', { className: 'hint', textContent: `Run ${run.id}${where} · ${events.length} events` }),
     ]);
     const inputBlock = run.input && Object.keys(run.input).length
@@ -950,6 +968,8 @@ async function showRun(runId) {
         el('b', { textContent: step.id }),
         el('code', { textContent: step.task }),
         badge(step.status),
+        ...(step.retries ? [el('span', { className: 'hint', textContent: `${step.retries} ${step.retries === 1 ? 'retry' : 'retries'}` })] : []),
+        ...(step.compensation ? [el('span', { className: 'hint', textContent: `undo: ${step.compensation.toLowerCase()}` })] : []),
         el('span', { className: 'out', textContent: step.status === 'SUCCEEDED'
           ? (step.iterations !== undefined ? `ran for ${step.iterations} item${step.iterations === 1 ? '' : 's'}` : describe(outputs[step.id]))
           : '' }),
@@ -960,10 +980,10 @@ async function showRun(runId) {
         if (outputs[step.id]?.truncated) {
           body.prepend(el('p', { className: 'hint', textContent: `Output was ${outputs[step.id].sizeBytes.toLocaleString()} bytes, so only a preview was stored.` }));
         }
-      } else if (step.status === 'FAILED') {
+      } else if (step.status === 'FAILED' || step.status === 'DEAD_LETTERED') {
         body = el('div', { className: 'body' }, el('div', { className: 'err', textContent: step.error }));
       } else {
-        const why = { SKIPPED: `Skipped: ${step.reason ?? 'an earlier step failed'}.`, PENDING: 'Never started.', RUNNING: 'Was still running when the run ended.' };
+        const why = { SKIPPED: `Skipped: ${step.reason ?? 'an earlier step failed'}.`, PENDING: 'Not started.', RUNNING: 'Running, or still running when the run ended.', CANCELLED: 'Cancelled while running.' };
         body = el('div', { className: 'body' }, el('span', { className: 'hint', textContent: why[step.status] }));
       }
       host.append(el('details', { className: 'step' }, [summary, body]));

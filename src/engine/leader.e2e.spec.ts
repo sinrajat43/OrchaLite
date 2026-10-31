@@ -25,6 +25,7 @@ describe('scheduler failover', () => {
   beforeAll(async () => {
     jest.spyOn(console, 'log').mockImplementation(() => undefined);
     jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined);
     buildEngine();
     process.env.ORCHALITE_ROLES = 'api,worker';
     process.env.ORCHALITE_WORKER_POLL_MS = '20';

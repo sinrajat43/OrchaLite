@@ -23,6 +23,7 @@ describe('example workflows', () => {
   beforeAll(async () => {
     jest.spyOn(console, 'log').mockImplementation(() => undefined);
     jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined);
 
     upstream = await startTestServer((req, res) => {
       if (req.url.startsWith('/search/repositories')) return sendJson(res, 200, { total_count: repos.length, items: repos });
@@ -123,6 +124,17 @@ describe('example workflows', () => {
 
     expect(status).toBe(400);
     expect(body.errors).toEqual(['input.org must match pattern "^[A-Za-z0-9-]+$"']);
+  });
+
+  it('saga-rollback: retries the charge, gives up, and undoes the reservation', async () => {
+    const { workflow } = loadExample('saga-rollback');
+    const inboxUrl = `${api.url}/inbox/saga`;
+
+    const { status, body } = await run(workflow, { order: 'A-1', inboxUrl, billingUrl: `${upstream.url}/down` });
+
+    expect(status).toBe(500);
+    expect(body).toMatchObject({ status: 'COMPENSATED', stepId: 'charge' });
+    expect((await inbox('saga')).map((m: { payload: { text: string } }) => m.payload.text)).toEqual(['Released stock for A-1', 'Reserved stock for A-1']);
   });
 
   it.each(['undeclared-dependency', 'bad-params', 'cycle-example'])('%s is rejected before anything runs', async name => {

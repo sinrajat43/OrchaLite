@@ -11,6 +11,7 @@ describe('connections', () => {
   beforeAll(async () => {
     jest.spyOn(console, 'log').mockImplementation(() => undefined);
     jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined);
     upstream = await startTestServer((req, res) => sendJson(res, 200, { auth: req.headers.authorization ?? null, url: req.url }));
     api = await startTestApi();
   }, 60_000);

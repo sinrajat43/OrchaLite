@@ -21,6 +21,7 @@ describe('worker crash', () => {
   beforeAll(async () => {
     jest.spyOn(console, 'log').mockImplementation(() => undefined);
     jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined);
     buildEngine();
 
     upstream = await startTestServer((_req, res) => {

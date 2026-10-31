@@ -13,6 +13,7 @@ import { CompiledRuns } from './compiled-runs';
 import { EngineOptions } from './engine-options';
 import { EngineSignals } from './engine-signals';
 import { RateLimited, RateLimiter } from './rate-limiter';
+import { noTelemetry, StepOutcome, Telemetry } from '../telemetry/telemetry';
 import { Claim, StepQueue } from './step-queue';
 import { isFinished, StepRun } from './step-run';
 
@@ -23,7 +24,8 @@ export interface WorkerDeps {
   connections: ConnectionLookup;
   limiter: RateLimiter;
   signals: EngineSignals;
-  options: Pick<EngineOptions, 'leaseMs' | 'workerSlots' | 'workerPollMs' | 'defaultStepTimeoutMs' | 'maxLostDeliveries'>;
+  options: Pick<EngineOptions, 'leaseMs' | 'workerSlots' | 'workerPollMs' | 'defaultStepTimeoutMs' | 'maxLostDeliveries'> & Partial<Pick<EngineOptions, 'shutdownGraceMs'>>;
+  telemetry?: Telemetry;
   /** Builds the logger handed to a step; defaults to a Nest Logger */
   createLogger?: (context: string) => TaskLogger;
 }
@@ -57,6 +59,17 @@ class StepFailure extends Error {
 /** This worker no longer holds the step, so whatever it was doing no longer counts */
 class LeaseLost extends Error {}
 
+/** The run was cancelled while this step was running */
+class Cancelled extends Error {}
+
+/** This worker is shutting down and ran out of time; the step goes back for another */
+class Drained extends Error {}
+
+/** Each is a reason the worker stopped the task; a task's own error after one of these is just its reaction */
+const isStopReason = (reason: unknown): boolean => reason instanceof LeaseLost || reason instanceof Cancelled || reason instanceof Drained;
+
+const CANCEL_CHECK_MS = 1000;
+
 /**
  * Takes jobs off the queue and runs them. A worker holds a job under a lease it
  * keeps renewing while the task runs; if the process dies the renewals stop, the
@@ -73,6 +86,8 @@ export class Worker {
   private loops: Promise<void>[] = [];
   private wakeSleepers: (() => void)[] = [];
   private unsubscribe?: () => void;
+  /** Tasks running now, so a shutdown can hand them back */
+  private readonly running = new Set<AbortController>();
 
   constructor(private readonly deps: WorkerDeps) {
     this.compiled = new CompiledRuns(deps.tasks);
@@ -83,11 +98,22 @@ export class Worker {
     this.loops = Array.from({ length: this.deps.options.workerSlots }, () => this.loop());
   }
 
+  /**
+   * Drains: takes nothing new and lets running steps finish. Any still running
+   * after the grace period are aborted and handed straight back, so they need
+   * not wait for a lease to run out.
+   */
   async stop(): Promise<void> {
     this.stopping = true;
     this.unsubscribe?.();
     this.wake();
+    const grace = setTimeout(() => this.running.forEach(abort => abort.abort(new Drained())), this.deps.options.shutdownGraceMs ?? 20_000);
     await Promise.all(this.loops);
+    clearTimeout(grace);
+  }
+
+  private get telemetry(): Telemetry {
+    return this.deps.telemetry ?? noTelemetry;
   }
 
   private wake(): void {
@@ -149,18 +175,45 @@ export class Worker {
     if (!taken) return;
     signals.runChanged(row.runId);
 
-    // Aborts the task if the lease goes; a timeout aborts it the same way
+    // Aborts the task if the lease goes or the run is cancelled; a timeout aborts it the same way
     const abort = new AbortController();
+    this.running.add(abort);
     const stopHeartbeat = this.heartbeat(claim, abort);
+    const span = this.telemetry.startStep({
+      runId: row.runId,
+      stepId: row.stepId,
+      task: row.task,
+      index: row.index,
+      attempt: (taken.failures?.length ?? 0) + 1,
+      compensation: row.compensation,
+      workerId: this.id,
+    });
+    const end = (outcome: StepOutcome, error?: string) => span.end(outcome, error);
+
     let changes: Partial<StepRun>;
     try {
       changes = await this.outcome(taken, abort);
     } catch (error) {
       if (error instanceof LeaseLost) {
+        end('lease_lost');
         this.logger.warn(`Worker ${this.id}: stopped working on ${row.id}: lease lost`);
         return;
       }
+      if (error instanceof Cancelled) {
+        end('cancelled');
+        await store.updateStepRun(row.id, { fence: taken.fence }, { status: 'CANCELLED', endedAt: new Date() });
+        await queue.ack(claim);
+        signals.runChanged(row.runId);
+        return;
+      }
+      if (error instanceof Drained) {
+        end('requeued');
+        const handedBack = await store.updateStepRun(row.id, { fence: taken.fence }, { status: 'QUEUED', yields: (taken.yields ?? 0) + 1 });
+        if (handedBack) await queue.release(claim);
+        return;
+      }
       if (error instanceof SuspendTask) {
+        end('waiting');
         const notBefore = new Date(Date.now() + error.ms);
         const yields = (taken.yields ?? 0) + 1;
         const waiting = await store.updateStepRun(row.id, { fence: taken.fence }, { status: 'WAITING', notBefore, resumed: true, yields });
@@ -169,6 +222,7 @@ export class Worker {
         return;
       }
       if (error instanceof RateLimited) {
+        end('rate_limited');
         // Not a failure: nothing happened yet, so it comes back when a call is allowed
         const notBefore = new Date(Date.now() + error.waitMs);
         const yields = (taken.yields ?? 0) + 1;
@@ -176,17 +230,33 @@ export class Worker {
         if (waiting) await queue.release(claim, notBefore);
         return;
       }
-      if (!(error instanceof StepFailure)) throw error;
+      if (!(error instanceof StepFailure)) {
+        end('lease_lost', (error as Error).message);
+        throw error;
+      }
       changes = await this.afterFailure(taken, claim, error);
-      if (!changes) return;
+      if (!changes) {
+        end('retried', error.message);
+        return;
+      }
     } finally {
       stopHeartbeat();
+      this.running.delete(abort);
     }
 
+    const stepLog = this.telemetry.logger({ runId: row.runId, stepId: row.stepId, task: row.task, index: row.index, workerId: this.id });
     const committed = await store.updateStepRun(row.id, { fence: taken.fence }, { ...changes, endedAt: new Date() });
     if (!committed) {
+      end('lease_lost');
       this.logger.warn(`Worker ${this.id}: lost ${row.id} to a newer delivery; dropping this result`);
       return;
+    }
+    if (changes.status === 'SUCCEEDED') {
+      end('succeeded');
+      stepLog.log('Step succeeded');
+    } else {
+      end(changes.status === 'DEAD_LETTERED' ? 'dead_lettered' : 'failed', changes.error);
+      stepLog.error(`Step ${changes.status === 'DEAD_LETTERED' ? 'dead-lettered' : 'failed'}: ${changes.error}`);
     }
     await queue.ack(claim);
     signals.runChanged(row.runId);
@@ -212,6 +282,7 @@ export class Worker {
         : { status: 'FAILED', error: failure.message };
     }
 
+    this.telemetry.logger({ runId: row.runId, stepId: row.stepId, task: row.task, index: row.index, attempt, workerId: this.id }).warn(`Attempt ${attempt} of ${maxAttempts} failed: ${failure.message}`);
     const notBefore = new Date(Date.now() + backoffMs(policy, attempt));
     const failures = [...(row.failures ?? []), { attempt, error: failure.message, at: new Date() }];
     const waiting = await store.updateStepRun(row.id, { fence: row.fence }, { status: 'WAITING', notBefore, failures, resumed: false });
@@ -247,25 +318,34 @@ export class Worker {
     };
   }
 
-  /** Renews the lease while the task runs, and aborts the task if it is lost */
+  /** Renews the lease while the task runs, and aborts it if the lease is lost or the run cancelled */
   private heartbeat(claim: Claim, abort: AbortController): () => void {
-    const { queue, options } = this.deps;
-    const timer = setInterval(() => {
-      queue.extend(claim, options.leaseMs).then(
-        held => {
-          if (!held) abort.abort(new LeaseLost());
-        },
+    const { queue, store, options } = this.deps;
+    const report = (what: string) => (error: Error) => this.logger.warn(`Worker ${this.id}: could not ${what} ${claim.job.id}: ${error.message}`);
+
+    const renewal = setInterval(() => {
+      queue.extend(claim, options.leaseMs).then(held => {
+        if (!held) abort.abort(new LeaseLost());
         // Maybe a blip; if it lasts, the lease runs out and the fence still protects the row
-        error => this.logger.warn(`Worker ${this.id}: could not renew ${claim.job.id}: ${error.message}`)
-      );
+      }, report('renew'));
     }, Math.max(1, Math.floor(options.leaseMs / 3)));
-    return () => clearInterval(timer);
+
+    const cancelCheck = setInterval(() => {
+      store.getStepRun(claim.job.id).then(row => {
+        if (row?.cancelRequested) abort.abort(new Cancelled());
+      }, report('check'));
+    }, Math.min(CANCEL_CHECK_MS, options.leaseMs));
+
+    return () => {
+      clearInterval(renewal);
+      clearInterval(cancelCheck);
+    };
   }
 
   /**
    * Resolves the row's params and runs its task
    * @throws StepFailure if the step failed
-   * @throws LeaseLost if this worker no longer holds the step
+   * @throws LeaseLost, Cancelled or Drained if the worker stopped the task
    * @throws SuspendTask if the task asked to wait
    * @throws RateLimited if a connection it uses is out of calls for now
    */
@@ -307,7 +387,7 @@ export class Worker {
       throw new StepFailure(`Invalid params${label}: ${formatSchemaErrors(validateParams.errors, 'params').join('; ')}`);
     }
 
-    const createLogger = this.deps.createLogger ?? ((context: string) => new Logger(context));
+    const createLogger = this.deps.createLogger ?? (() => this.telemetry.logger({ runId: row.runId, stepId: row.stepId, task: row.task, index: row.index, workerId: this.id }));
     const timeoutMs = (row.compensation ? compiled.step.compensate.timeoutMs : compiled.step.timeoutMs) ?? options.defaultStepTimeoutMs;
     const timedOut = new Error(`Timed out after ${timeoutMs} ms`);
     const timer = setTimeout(() => abort.abort(timedOut), timeoutMs);
@@ -330,9 +410,9 @@ export class Worker {
       });
       output = await Promise.race([running, aborted]);
     } catch (error) {
-      if (error instanceof SuspendTask || error instanceof LeaseLost || error instanceof RateLimited) throw error;
-      // The abort reason wins over whatever the aborted task threw, usually "canceled"
-      if (abort.signal.reason instanceof LeaseLost) throw abort.signal.reason;
+      // The stop reason wins over whatever the aborted task threw, usually "canceled"
+      if (isStopReason(abort.signal.reason)) throw abort.signal.reason;
+      if (error instanceof SuspendTask || error instanceof RateLimited) throw error;
       const message = `Task execution failed${label}: ${(error as Error)?.message ?? error}`;
       throw new StepFailure(message, !(error instanceof TerminalTaskError));
     } finally {

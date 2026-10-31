@@ -1,6 +1,8 @@
 # Run history design
 
-Status: implemented · 2026-10-25
+Status: implemented · 2026-10-25. Written for the first slice of B1, when runs
+still executed in the request. The event model and API here stand; for how runs
+execute now, and how events are written, see [engine-design.md](engine-design.md).
 
 ## Goal
 

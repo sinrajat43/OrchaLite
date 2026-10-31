@@ -83,6 +83,7 @@ const StepRunSchema = new Schema(
     iterations: Number,
     notBefore: Date,
     resumed: Boolean,
+    cancelRequested: Boolean,
     yields: Number,
     failures: [{ _id: false, attempt: Number, error: String, at: Date }],
     startedAt: Date,
@@ -107,6 +108,8 @@ const RunSummaryModel: Model<any> = models.RunSummary ?? model('RunSummary', Run
 const StepRunModel: Model<any> = models.StepRun ?? model('StepRun', StepRunSchema, 'step_runs');
 
 const RunRequestModel: Model<any> = models.RunRequest ?? model('RunRequest', RunRequestSchema, 'run_requests');
+
+const ACTIVE_RUN_STATUSES = ['RUNNING', 'COMPENSATING', 'CANCELLING'];
 
 const toRow = ({ _id, ...row }: any): StepRun => ({ id: _id, ...row });
 const toEvent = ({ _id, published, ...event }: any): RunEvent => event;
@@ -158,7 +161,7 @@ export class MongoRunStore implements RunStore {
   }
 
   async findRunning(): Promise<RunSummary[]> {
-    const runs = await RunSummaryModel.find({ status: { $in: ['RUNNING', 'COMPENSATING'] } }).lean();
+    const runs = await RunSummaryModel.find({ status: { $in: ACTIVE_RUN_STATUSES } }).lean();
     return runs.map(toSummary);
   }
 
@@ -201,6 +204,15 @@ export class MongoRunStore implements RunStore {
     const inc = { version: 1, ...(options.takeFence ? { fence: 1 } : {}) };
     const row: any = await StepRunModel.findOneAndUpdate(filter, { $set: changes, $inc: inc }, { new: true, lean: true });
     return row ? toRow(row) : null;
+  }
+
+  async deleteUnfinishedWork(runId: string): Promise<void> {
+    // A forEach step's items that succeeded stay, so only the others run again
+    await StepRunModel.deleteMany({ runId, status: { $ne: 'SUCCEEDED' } });
+  }
+
+  countActiveRuns(): Promise<number> {
+    return RunSummaryModel.countDocuments({ status: { $in: ACTIVE_RUN_STATUSES } });
   }
 
   async listPending(perRun: number): Promise<StepRun[]> {

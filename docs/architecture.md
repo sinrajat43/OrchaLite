@@ -1,5 +1,8 @@
 # OrchaLite architecture
 
+> Sections 1 and 2 describe the system before phase B. Phase B built the target in
+> sections 3 and 4; [engine-design.md](engine-design.md) describes it as built.
+
 Four diagrams: what the code does today (1, 2), and where the roadmap takes it (3, 4).
 
 ## 1. Today: one request runs the whole workflow

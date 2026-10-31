@@ -16,6 +16,7 @@ describe('fan-out and backpressure', () => {
   beforeAll(async () => {
     jest.spyOn(console, 'log').mockImplementation(() => undefined);
     jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined);
 
     upstream = await startTestServer((req, res) => {
       current++;

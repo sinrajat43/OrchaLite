@@ -11,9 +11,9 @@
  * WAITING is a retry's backoff or a task's stored wait. PENDING, QUEUED and
  * WAITING can also move to SKIPPED when an earlier step fails.
  */
-export type StepRunStatus = 'PENDING' | 'QUEUED' | 'RUNNING' | 'WAITING' | 'SUCCEEDED' | 'FAILED' | 'DEAD_LETTERED' | 'SKIPPED';
+export type StepRunStatus = 'PENDING' | 'QUEUED' | 'RUNNING' | 'WAITING' | 'SUCCEEDED' | 'FAILED' | 'DEAD_LETTERED' | 'SKIPPED' | 'CANCELLED';
 
-export const FINISHED_STEP_RUN: StepRunStatus[] = ['SUCCEEDED', 'FAILED', 'DEAD_LETTERED', 'SKIPPED'];
+export const FINISHED_STEP_RUN: StepRunStatus[] = ['SUCCEEDED', 'FAILED', 'DEAD_LETTERED', 'SKIPPED', 'CANCELLED'];
 
 export const isFinished = (row: Pick<StepRun, 'status'>): boolean => FINISHED_STEP_RUN.includes(row.status);
 
@@ -66,6 +66,8 @@ export interface StepRun {
   resumed?: boolean;
   /** Times this row gave up its worker on purpose, for a stored wait or a rate limit */
   yields?: number;
+  /** The run is being cancelled; a worker holding this row aborts its task */
+  cancelRequested?: boolean;
   /** Retryable failures so far, oldest first; the next attempt is one more than their number */
   failures?: StepFailureRecord[];
   startedAt?: Date;

@@ -228,6 +228,67 @@
     }
   },
   {
+    "label": "Saga rollback: reserve, then undo it when the charge fails",
+    "input": {
+      "order": "A-100",
+      "inboxUrl": "http://localhost:3000/inbox/saga",
+      "billingUrl": "http://127.0.0.1:9/charge"
+    },
+    "workflow": {
+      "name": "saga-rollback",
+      "input": {
+        "order": "string",
+        "inboxUrl": "string",
+        "billingUrl": "string"
+      },
+      "steps": [
+        {
+          "id": "reserve",
+          "task": "notify.webhook",
+          "dependsOn": [],
+          "params": {
+            "url": "{{ input.inboxUrl }}",
+            "payload": {
+              "text": "Reserved stock for {{ input.order }}"
+            }
+          },
+          "compensate": {
+            "task": "notify.webhook",
+            "params": {
+              "url": "{{ input.inboxUrl }}",
+              "payload": {
+                "text": "Released stock for {{ input.order }}"
+              }
+            },
+            "retry": {
+              "maxAttempts": 3,
+              "backoffMs": 200
+            }
+          }
+        },
+        {
+          "id": "charge",
+          "task": "http.request",
+          "dependsOn": [
+            "reserve"
+          ],
+          "params": {
+            "method": "POST",
+            "url": "{{ input.billingUrl }}",
+            "body": {
+              "order": "{{ input.order }}"
+            },
+            "timeoutMs": 2000
+          },
+          "retry": {
+            "maxAttempts": 2,
+            "backoffMs": 200
+          }
+        }
+      ]
+    }
+  },
+  {
     "label": "GitHub: two filters from one fetch (nothing stored)",
     "input": {
       "org": "facebook"

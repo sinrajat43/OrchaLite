@@ -47,7 +47,7 @@ export class InMemoryRunStore implements RunStore {
   }
 
   async findRunning(): Promise<RunSummary[]> {
-    return [...this.runs.values()].filter(run => run.status === 'RUNNING' || run.status === 'COMPENSATING').map(run => structuredClone(run));
+    return [...this.runs.values()].filter(run => ['RUNNING', 'COMPENSATING', 'CANCELLING'].includes(run.status)).map(run => structuredClone(run));
   }
 
   async insertStepRuns(rows: StepRun[]): Promise<void> {
@@ -84,6 +84,16 @@ export class InMemoryRunStore implements RunStore {
     if (expected.fence !== undefined && expected.fence !== row.fence) return null;
     Object.assign(row, structuredClone(changes), { version: row.version + 1, fence: row.fence + (options.takeFence ? 1 : 0) });
     return structuredClone(row);
+  }
+
+  async deleteUnfinishedWork(runId: string): Promise<void> {
+    for (const row of this.rowsOf(runId)) {
+      if (row.status !== 'SUCCEEDED') this.stepRuns.delete(row.id);
+    }
+  }
+
+  async countActiveRuns(): Promise<number> {
+    return (await this.findRunning()).length;
   }
 
   async listPending(perRun: number): Promise<StepRun[]> {

@@ -5,7 +5,8 @@ import { CompiledStep } from '../orchestrator/workflow-definition';
 import { capOutput, appendRunEvent } from '../runs/run-recorder';
 import { DuplicateEventError, RunStore } from '../runs/run-store';
 import { IllegalTransitionError } from '../runs/run-projection';
-import { RunSummary } from '../runs/run.types';
+import { RunEventType, RunSummary } from '../runs/run.types';
+import { noTelemetry, Telemetry } from '../telemetry/telemetry';
 import { CompiledRuns } from './compiled-runs';
 import { EngineOptions } from './engine-options';
 import { EngineSignals } from './engine-signals';
@@ -24,9 +25,11 @@ export interface SchedulerDeps {
   options: Pick<EngineOptions, 'schedulerIntervalMs' | 'runWindow' | 'taskLimits'>;
   /** With several schedulers, only the leader acts; alone, it always does */
   isLeader?: () => boolean;
+  telemetry?: Telemetry;
 }
 
 const SKIP_AFTER_FAILURE = 'an earlier step failed';
+const SKIP_AFTER_CANCEL = 'the run was cancelled';
 
 /**
  * Decides what happens next in each active run. It works level-triggered: every
@@ -122,13 +125,13 @@ export class Scheduler {
   private async pass(runId: string): Promise<boolean> {
     const { store } = this.deps;
     const run = await store.getRun(runId);
-    if (!run || (run.status !== 'RUNNING' && run.status !== 'COMPENSATING') || !run.execution) return false;
+    if (!run || !['RUNNING', 'COMPENSATING', 'CANCELLING'].includes(run.status) || !run.execution) return false;
 
     let steps: Map<string, CompiledStep>;
     try {
       steps = this.compiled.steps(run);
     } catch (error) {
-      await appendRunEvent(store, runId, 'RunFailed', { error: (error as Error).message });
+      await this.endRun(runId, 'RunFailed', { error: (error as Error).message });
       return false;
     }
 
@@ -140,6 +143,7 @@ export class Scheduler {
 
     const mine = new Map(rows.filter(row => row.index === undefined).map(row => [row.stepId, row]));
     const items = rows.filter(row => row.index !== undefined);
+    if (run.status === 'CANCELLING') return this.cancel(run, steps, rows, mine, items);
 
     const changed =
       (await this.finishFanOuts(mine, items)) ||
@@ -163,6 +167,11 @@ export class Scheduler {
       const own = items.filter(item => item.stepId === row.stepId).sort((a, b) => a.index - b.index);
       if (!own.every(isFinished)) continue;
       const failed = own.find(isFailure);
+      const stopped = own.find(item => item.status === 'CANCELLED' || item.reason === SKIP_AFTER_CANCEL);
+      if (stopped && !failed) {
+        if (await store.updateStepRun(row.id, { status: ['RUNNING'] }, { status: 'CANCELLED', endedAt: new Date() })) changed = true;
+        continue;
+      }
       const output = failed ? undefined : await store.getItemOutputs(row.runId, row.stepId);
       let update: Partial<StepRun> = failed
         ? { status: failed.status, error: failed.error }
@@ -291,6 +300,10 @@ export class Scheduler {
       if (row.status === 'SUCCEEDED') {
         const output = (await store.getStepOutputs(run.id, [stepId]))[stepId];
         summary = await appendRunEvent(store, run.id, 'StepSucceeded', { stepId, output: capOutput(output), iterations: row.iterations }, at);
+      } else if (row.status === 'CANCELLED') {
+        // A step that never started shows as skipped instead, and is left alone here
+        if (shown().status === 'RUNNING') summary = await appendRunEvent(store, run.id, 'StepCancelled', { stepId }, at);
+        else summary = await appendRunEvent(store, run.id, 'StepSkipped', { stepId, reason: SKIP_AFTER_CANCEL }, at);
       } else if (isFailure(row)) {
         const deadLettered = row.status === 'DEAD_LETTERED' ? true : undefined;
         summary = await appendRunEvent(store, run.id, 'StepFailed', { stepId, error: row.error, deadLettered }, at);
@@ -389,13 +402,46 @@ export class Scheduler {
 
     const failed = [...steps.keys()].map(id => mine.get(id)).find(isFailure);
     if (!failed) {
-      await appendRunEvent(store, run.id, 'RunSucceeded', {});
+      await this.endRun(run.id, 'RunSucceeded', {});
       return false;
     }
     const ending = { failedStepId: failed.stepId, error: failed.error };
     const anythingToUndo = [...steps.values()].some(({ step, compensate }) => compensate && mine.get(step.id)?.status === 'SUCCEEDED');
-    await appendRunEvent(store, run.id, anythingToUndo ? 'RunCompensating' : 'RunFailed', ending);
+    if (anythingToUndo) await appendRunEvent(store, run.id, 'RunCompensating', ending);
+    else await this.endRun(run.id, 'RunFailed', ending);
     return anythingToUndo;
+  }
+
+  /** Records that a run ended, and reports it */
+  private async endRun(runId: string, type: RunEventType, data: Record<string, unknown>): Promise<void> {
+    const ended = await appendRunEvent(this.deps.store, runId, type, data);
+    (this.deps.telemetry ?? noTelemetry).runEnded({ ...ended, runId });
+  }
+
+  /**
+   * Winds a cancelled run down: what has not started never will, and workers
+   * holding running steps are told to abort. It does not undo finished steps:
+   * cancelling says stop, and whether to reverse anything is a separate decision.
+   */
+  private async cancel(run: RunSummary, steps: Map<string, CompiledStep>, rows: StepRun[], mine: Map<string, StepRun>, items: StepRun[]): Promise<boolean> {
+    const { store } = this.deps;
+    let changed = false;
+    for (const row of rows) {
+      if (row.status === 'RUNNING' && !row.fanOut && !row.cancelRequested) {
+        await store.updateStepRun(row.id, { status: ['RUNNING'] }, { cancelRequested: true });
+      } else if (['PENDING', 'QUEUED', 'WAITING'].includes(row.status)) {
+        if (await store.updateStepRun(row.id, { status: ['PENDING', 'QUEUED', 'WAITING'] }, { status: 'SKIPPED', reason: SKIP_AFTER_CANCEL })) changed = true;
+      }
+    }
+    if (await this.finishFanOuts(mine, items)) changed = true;
+    const missing = [...steps.values()].filter(({ step }) => !mine.has(step.id));
+    if (missing.length) {
+      await store.insertStepRuns(missing.map(({ step }) => newStepRun({ runId: run.id, stepId: step.id, task: step.task, workflow: run.name, status: 'SKIPPED', reason: SKIP_AFTER_CANCEL })));
+      changed = true;
+    }
+    if (changed || (await this.report(run, steps, mine))) return true;
+    if (rows.every(isFinished)) await this.endRun(run.id, 'RunCancelled', {});
+    return false;
   }
 
   /**
@@ -434,11 +480,11 @@ export class Scheduler {
     const failedUndo = undoRows.find(isFailure);
     if (undoRows.every(isFinished)) {
       if (failedUndo) {
-        await appendRunEvent(store, run.id, 'RunCompensationFailed', { compensationError: failedUndo.error });
+        await this.endRun(run.id, 'RunCompensationFailed', { compensationError: failedUndo.error });
         return false;
       }
       if (undoRows.length === toUndo.length) {
-        await appendRunEvent(store, run.id, 'RunCompensated', {});
+        await this.endRun(run.id, 'RunCompensated', {});
         return false;
       }
     }

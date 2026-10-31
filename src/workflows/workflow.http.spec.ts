@@ -74,6 +74,7 @@ describe('HTTP API', () => {
   beforeAll(async () => {
     jest.spyOn(console, 'log').mockImplementation(() => undefined);
     jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined);
 
     app = await NestFactory.create<NestExpressApplication>(TestAppModule, { logger: false });
     configureApp(app);

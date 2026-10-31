@@ -40,4 +40,14 @@ export class InMemoryStepQueue implements StepQueue {
     entry.token = undefined;
     entry.visibleAt = availableAt.getTime();
   }
+
+  async depth(): Promise<{ ready: number; delayed: number; leased: number }> {
+    const now = Date.now();
+    const entries = [...this.jobs.values()];
+    return {
+      ready: entries.filter(e => e.visibleAt <= now).length,
+      delayed: entries.filter(e => e.visibleAt > now && !e.token).length,
+      leased: entries.filter(e => e.visibleAt > now && e.token).length,
+    };
+  }
 }
