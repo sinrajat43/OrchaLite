@@ -43,18 +43,18 @@ describe('stored workflow definitions', () => {
   });
 
   it('runs the latest stored version, or the one asked for', async () => {
-    const latest = await api.request('POST', '/workflows/double/runs', { input: { n: 5 } });
-    expect(latest.status).toBe(201);
+    const latest = await api.request('POST', '/workflows/double/runs?wait=true', { input: { n: 5 } });
+    expect(latest.status).toBe(200);
     expect(latest.body).toMatchObject({ workflow: { name: 'double', version: 2 }, steps: { calc: { output: 15 } } });
 
-    const pinned = await api.request('POST', '/workflows/double/runs', { input: { n: 5 }, version: 1 });
+    const pinned = await api.request('POST', '/workflows/double/runs?wait=true', { input: { n: 5 }, version: 1 });
     expect(pinned.body).toMatchObject({ workflow: { version: 1 }, steps: { calc: { output: 10 } } });
 
-    expect((await api.request('POST', '/workflows/double/runs', { input: { n: 'x' } })).body.message).toBe('Invalid run input');
+    expect((await api.request('POST', '/workflows/double/runs?wait=true', { input: { n: 'x' } })).body.message).toBe('Invalid run input');
   });
 
   it('records stored runs in MongoDB with the workflow version they ran', async () => {
-    const { body } = await api.request('POST', '/workflows/double/runs', { input: { n: 4 }, version: 1 });
+    const { body } = await api.request('POST', '/workflows/double/runs?wait=true', { input: { n: 4 }, version: 1 });
 
     const run = await api.request('GET', `/runs/${body.runId}`);
     expect(run.body).toMatchObject({

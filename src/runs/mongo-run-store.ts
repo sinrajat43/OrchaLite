@@ -72,8 +72,15 @@ export class MongoRunStore implements RunStore {
     }
   }
 
-  async saveSummary({ id, ...summary }: RunSummary): Promise<void> {
-    await RunSummaryModel.replaceOne({ _id: id }, summary, { upsert: true });
+  async saveSummary({ id, ...summary }: RunSummary, expectedLastSeq: number): Promise<boolean> {
+    try {
+      // A failed version check matches nothing, then the upsert hits the _id index
+      const result = await RunSummaryModel.replaceOne({ _id: id, lastSeq: expectedLastSeq }, summary, { upsert: expectedLastSeq === 0 });
+      return result.matchedCount + result.upsertedCount > 0;
+    } catch (error) {
+      if ((error as any)?.code === 11000) return false;
+      throw error;
+    }
   }
 
   async listRuns({ status, name, limit, before }: RunQuery): Promise<RunSummary[]> {
@@ -91,8 +98,8 @@ export class MongoRunStore implements RunStore {
     return run ? toSummary(run) : null;
   }
 
-  async getEvents(runId: string): Promise<RunEvent[]> {
-    const events = await RunEventModel.find({ runId }).sort({ seq: 1 }).lean();
+  async getEvents(runId: string, afterSeq = 0): Promise<RunEvent[]> {
+    const events = await RunEventModel.find({ runId, seq: { $gt: afterSeq } }).sort({ seq: 1 }).lean();
     return events.map(toEvent);
   }
 

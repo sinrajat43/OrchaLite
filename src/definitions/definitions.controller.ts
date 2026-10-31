@@ -1,7 +1,8 @@
-import { Body, Controller, Get, NotFoundException, Param, ParseIntPipe, Post } from '@nestjs/common';
-import { WorkflowResults } from '../orchestrator/task-runner.util';
+import { Body, Controller, Get, HttpCode, NotFoundException, Param, ParseIntPipe, Post, Query, Res } from '@nestjs/common';
+import { Response } from 'express';
+import { RunResult } from '../runs/run-result';
 import { RunStoredWorkflowDto, WorkflowDefinitionDto } from '../workflows/dto/workflow.dto';
-import { WorkflowService } from '../workflows/workflow.service';
+import { AcceptedRun, WorkflowService } from '../workflows/workflow.service';
 import { DefinitionStore, DefinitionSummary, StoredDefinition } from './definition-store.service';
 
 @Controller('workflows')
@@ -43,16 +44,19 @@ export class DefinitionsController {
   }
 
   /**
-   * Runs a stored version, the latest by default, inside the request
+   * Starts a run of a stored version, the latest by default
    */
   @Post(':name/runs')
+  @HttpCode(202)
   async run(
     @Param('name') name: string,
-    @Body() { input, version }: RunStoredWorkflowDto
-  ): Promise<WorkflowResults & { workflow: { name: string; version: number } }> {
+    @Body() { input, version }: RunStoredWorkflowDto,
+    @Query('wait') wait: string | undefined,
+    @Res({ passthrough: true }) response: Response
+  ): Promise<AcceptedRun | RunResult> {
     const stored = await this.find(name, version);
-    const results = await this.workflows.run(stored.definition, input, { name, version: stored.version });
-    return { workflow: { name, version: stored.version }, ...results };
+    const accepted = await this.workflows.start(stored.definition, input, { name, version: stored.version });
+    return this.workflows.respond(accepted, wait, response);
   }
 
   private async find(name: string, version?: number): Promise<StoredDefinition> {

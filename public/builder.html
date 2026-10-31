@@ -1831,7 +1831,7 @@ async function runPlan(input, button, results) {
   button.textContent = 'Running…';
   state.stepResults = {};
   renderBoardClassesOnly();
-  results.replaceChildren(el('p', { className: 'hint', textContent: 'Running… results appear when every step has finished.' }));
+  results.replaceChildren(el('p', { className: 'hint', textContent: 'Running… results appear when the run ends.' }));
   const started = performance.now();
   try {
     // A stored, unchanged plan runs as that version, so run history records which one ran
@@ -1851,9 +1851,26 @@ async function runPlan(input, button, results) {
     const text = await response.text();
     let body = {};
     try { body = text ? JSON.parse(text) : {}; } catch { body = { message: text }; }
+
+    // A run is accepted (202) and happens in the background; follow it until it ends
+    let failedRun = false;
+    if (response.ok) {
+      const accepted = body;
+      const result = await followRun(accepted.runId, progress => {
+        for (const [id, step] of Object.entries(progress.steps)) {
+          if (step.status === 'succeeded') state.stepResults[id] = 'ok';
+          else if (step.status === 'skipped') state.stepResults[id] = 'skipped';
+        }
+        renderBoardClassesOnly();
+      });
+      failedRun = result.status !== 'SUCCEEDED';
+      body = failedRun
+        ? { message: result.error ?? `Run ended as ${result.status}`, stepId: result.failedStepId, runId: result.runId }
+        : { ...result, workflow: accepted.workflow };
+    }
     const seconds = ((performance.now() - started) / 1000).toFixed(1);
 
-    if (response.ok) {
+    if (response.ok && !failedRun) {
       // Shape: { runId, steps: { <id>: { status, output } } }
       const stepResults = body.steps ?? {};
       for (const step of steps()) {
@@ -1877,7 +1894,7 @@ async function runPlan(input, button, results) {
       }
     } else {
       if (body.stepId) state.stepResults[body.stepId] = 'failed';
-      const kind = response.status >= 500 ? `Step "${body.stepId ?? '?'}" failed` : 'Rejected before running';
+      const kind = failedRun ? `Step "${body.stepId ?? '?'}" failed` : response.status >= 500 ? 'The server failed' : 'Rejected before running';
       const messages = [].concat(body.message ?? `HTTP ${response.status}`);
       const details = (body.errors ?? []).map(e => (typeof e === 'string' ? e : `${e.property}: ${Object.values(e.constraints ?? {}).join(', ')}`));
       if (messages.length > 1) details.unshift(...messages.slice(1));
@@ -1893,6 +1910,17 @@ async function runPlan(input, button, results) {
     button.textContent = 'Run plan';
     renderBoardClassesOnly();
     renderRecentRuns();
+  }
+}
+
+/** Polls a run until it ends, reporting its progress; returns the final result */
+async function followRun(runId, onProgress) {
+  for (;;) {
+    const r = await api('GET', `/runs/${runId}/result`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    if (r.body.status !== 'RUNNING') return r.body;
+    onProgress(r.body);
+    await new Promise(resolve => setTimeout(resolve, 300));
   }
 }
 

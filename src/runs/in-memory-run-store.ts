@@ -16,8 +16,10 @@ export class InMemoryRunStore implements RunStore {
     this.events.push(structuredClone(event));
   }
 
-  async saveSummary(summary: RunSummary): Promise<void> {
+  async saveSummary(summary: RunSummary, expectedLastSeq: number): Promise<boolean> {
+    if ((this.runs.get(summary.id)?.lastSeq ?? 0) !== expectedLastSeq) return false;
     this.runs.set(summary.id, structuredClone(summary));
+    return true;
   }
 
   async listRuns({ status, name, limit, before }: RunQuery): Promise<RunSummary[]> {
@@ -33,9 +35,9 @@ export class InMemoryRunStore implements RunStore {
     return run ? structuredClone(run) : null;
   }
 
-  async getEvents(runId: string): Promise<RunEvent[]> {
+  async getEvents(runId: string, afterSeq = 0): Promise<RunEvent[]> {
     return this.events
-      .filter(e => e.runId === runId)
+      .filter(e => e.runId === runId && e.seq > afterSeq)
       .sort((a, b) => a.seq - b.seq)
       .map(e => structuredClone(e));
   }

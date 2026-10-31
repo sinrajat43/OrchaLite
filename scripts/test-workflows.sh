@@ -2,7 +2,7 @@
 
 # Test workflow for GitHub repo analysis
 echo "Testing GitHub repo analysis workflow..."
-curl -X POST http://localhost:3000/workflow/run \
+curl -X POST 'http://localhost:3000/workflow/run?wait=true' \
      -H "Content-Type: application/json" \
      -d '{
        "name": "github-repo-analysis",
@@ -28,7 +28,7 @@ curl -X POST http://localhost:3000/workflow/run \
      }'
 
 echo -e "\n\nTest workflow for specific organization..."
-curl -X POST http://localhost:3000/workflow/run \
+curl -X POST 'http://localhost:3000/workflow/run?wait=true' \
      -H "Content-Type: application/json" \
      -d '{
        "name": "microsoft-repo-analysis",
@@ -56,7 +56,7 @@ curl -X POST http://localhost:3000/workflow/run \
 
 # Example of a workflow with validation error (missing required field)
 echo -e "\n\nTesting validation error..."
-curl -X POST http://localhost:3000/workflow/run \
+curl -X POST 'http://localhost:3000/workflow/run?wait=true' \
      -H "Content-Type: application/json" \
      -d '{
        "name": "invalid-workflow",
@@ -70,7 +70,7 @@ curl -X POST http://localhost:3000/workflow/run \
 
 # Example of a workflow with dependency error
 echo -e "\n\nTesting dependency error..."
-curl -X POST http://localhost:3000/workflow/run \
+curl -X POST 'http://localhost:3000/workflow/run?wait=true' \
      -H "Content-Type: application/json" \
      -d '{
        "name": "dependency-error",

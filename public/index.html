@@ -165,6 +165,7 @@
   .node rect { fill: var(--node); stroke: var(--border); stroke-width: 1.5; }
   .node .id { font-weight: 600; fill: var(--text); font-size: 13px; }
   .node .task { fill: var(--muted); font: 11.5px var(--mono); }
+  .node.running rect { stroke: var(--accent); }
   .node.done rect { stroke: var(--ok); fill: var(--ok-bg); }
   .node.failed rect { stroke: var(--bad); fill: var(--bad-bg); }
   .node.invalid rect { stroke: var(--bad); stroke-dasharray: 5 4; }
@@ -747,7 +748,7 @@ async function run(storedName) {
   button.textContent = 'Running…';
   stepStatus = {};
   refresh();
-  $('results').replaceChildren(el('span', { className: 'hint', textContent: 'Running… results appear when every step has finished.' }));
+  $('results').replaceChildren(el('span', { className: 'hint', textContent: 'Running… the graph shows each step as it progresses; results appear when the run ends.' }));
 
   const started = performance.now();
   selectedRunId = null;
@@ -764,16 +765,26 @@ async function run(storedName) {
           body: JSON.stringify({ definition: parsed.workflow, input: parsed.input }),
         });
     const text = await response.text();
-    const body = text ? JSON.parse(text) : {};
-    const ms = performance.now() - started;
-    selectedRunId = body.runId ?? null;
+    const accepted = text ? JSON.parse(text) : {};
+    selectedRunId = accepted.runId ?? null;
 
-    if (response.ok) {
-      for (const step of parsed.steps) stepStatus[step.id] = body.steps[step.id]?.status === 'skipped' ? 'skipped' : 'done';
-      renderSuccess(parsed.steps, body, ms);
+    if (!response.ok) {
+      renderFailure(response.status, accepted, performance.now() - started);
+      return;
+    }
+    // The run is accepted and happens in the background; follow it until it ends
+    loadHistory();
+    const result = await followRun(accepted.runId, progress => {
+      for (const [id, step] of Object.entries(progress.steps)) stepStatus[id] = STEP_STATE[step.status];
+      refresh();
+    });
+    const ms = performance.now() - started;
+    for (const [id, step] of Object.entries(result.steps)) stepStatus[id] = STEP_STATE[step.status];
+    if (result.status === 'SUCCEEDED') {
+      renderSuccess(parsed.steps, { ...result, workflow: accepted.workflow }, ms);
     } else {
-      if (body.stepId) stepStatus[body.stepId] = 'failed';
-      renderFailure(response.status, body, ms);
+      const task = parsed.steps.find(step => step.id === result.failedStepId)?.task;
+      renderFailure(500, { message: result.error ?? `Run ended as ${result.status}`, stepId: result.failedStepId, task, runId: result.runId }, ms);
     }
   } catch (error) {
     renderFailure(0, { message: `Could not reach the server: ${error.message}` }, performance.now() - started);
@@ -783,6 +794,21 @@ async function run(storedName) {
     refresh();
     loadInbox();
     loadHistory();
+  }
+}
+
+const STEP_STATE = { pending: undefined, running: 'running', succeeded: 'done', failed: 'failed', skipped: 'skipped' };
+const RUN_ACTIVE = ['RUNNING'];
+
+/** Polls a run until it ends, reporting its progress; returns the final result */
+async function followRun(runId, onProgress) {
+  for (;;) {
+    const response = await fetch(`/runs/${runId}/result`);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const result = await response.json();
+    if (!RUN_ACTIVE.includes(result.status)) return result;
+    onProgress(result);
+    await new Promise(resolve => setTimeout(resolve, 300));
   }
 }
 

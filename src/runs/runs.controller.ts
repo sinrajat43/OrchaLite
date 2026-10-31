@@ -1,5 +1,6 @@
 import { Controller, Get, Inject, NotFoundException, Param, Query } from '@nestjs/common';
 import { ListRunsQueryDto } from './dto/list-runs-query.dto';
+import { RunResult, toRunResult } from './run-result';
 import { RUN_STORE, RunStore } from './run-store';
 import { RunEvent, RunSummary } from './run.types';
 
@@ -17,6 +18,14 @@ export class RunsController {
     const run = await this.store.getRun(id);
     if (!run) throw new NotFoundException(`Run ${id} not found`);
     return run;
+  }
+
+  /**
+   * The run's status with each step's output
+   */
+  @Get(':id/result')
+  async getResult(@Param('id') id: string): Promise<RunResult> {
+    return toRunResult(await this.getRun(id), await this.store.getEvents(id));
   }
 
   @Get(':id/events')

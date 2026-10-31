@@ -10,13 +10,18 @@ export const RUN_STORE = Symbol('RUN_STORE');
 export interface RunStore {
   /** Adds an event; rejects if (runId, seq) already exists */
   appendEvent(event: RunEvent): Promise<void>;
-  /** Inserts or replaces the summary for summary.id */
-  saveSummary(summary: RunSummary): Promise<void>;
+  /**
+   * Replaces the summary only if its stored lastSeq is still expectedLastSeq
+   * (0 for a run with no summary yet): a conditional update, so a writer working
+   * from an old copy cannot overwrite a newer one.
+   * @returns false if the version check failed and nothing was written
+   */
+  saveSummary(summary: RunSummary, expectedLastSeq: number): Promise<boolean>;
   /** Newest first */
   listRuns(query: RunQuery): Promise<RunSummary[]>;
   getRun(runId: string): Promise<RunSummary | null>;
-  /** Oldest first */
-  getEvents(runId: string): Promise<RunEvent[]>;
+  /** Oldest first, optionally only those after a seq */
+  getEvents(runId: string, afterSeq?: number): Promise<RunEvent[]>;
   findRunning(): Promise<RunSummary[]>;
 }
 

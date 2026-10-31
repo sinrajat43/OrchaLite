@@ -232,18 +232,16 @@ decide what a persisted step record has to store.
 
 ### Phase B: durability
 
-- [ ] **B1. Persisted run as a state machine**
-  - Build: `POST /workflows/:id/runs` returning `202` and a run id;
-    `workflow_runs` and `step_runs` collections; status transitions as
-    conditional updates with a version check; `GET /runs/:id`.
+- [x] **B1. Persisted run as a state machine** (done 2026-10-31)
+  - Build: `POST /workflows/:name/runs` and `POST /workflow/run` returning `202`
+    and a run id; `workflow_runs` and `run_events`; status transitions checked
+    by a state machine and written as conditional updates with a version check;
+    `GET /runs/:id` and `GET /runs/:id/result`. See
+    [run-history-design.md](run-history-design.md).
   - Teaches: asynchronous API design, state machines, optimistic concurrency,
     separating a definition from an execution.
   - Done when: a run's full history can be read back after the process
     restarts.
-  - Progress (2026-10-25): run history is in place (event timeline,
-    projected summary, `GET /runs/:id`, abandoned-run sweep); see
-    [run-history-design.md](run-history-design.md). Left for B1: asynchronous
-    runs (`202` and a run id) and status transitions as conditional updates.
 
 - [ ] **B2. API, scheduler and workers split**
   - Build: a scheduler that queues ready steps; workers that claim a step with
@@ -365,3 +363,6 @@ Several of these come back in later horizons, noted on each item.
 | 2026-10-25 | A run is recorded only once the engine accepts its definition and input; each run records its input with defaults and the stored version it came from | Rejected requests are not runs; the version link makes history meaningful as workflows change |
 | 2026-10-25 | Outputs over 256 KB are stored as a preview; all history is kept (no TTL) | Bounded event size without a second store yet; retention can be added when it matters |
 | 2026-10-25 | A canvas builder ships as a separate page next to the classic UI, storing plans through `/workflows` and keeping only drafts and layout in the browser | Built in parallel with phase A without touching engine code; one source of truth for definitions |
+| 2026-10-31 | Run requests return `202` with a run id; `?wait=true` holds the request open by polling the run's state, and returns `200` or the failed step's `500` | Execution no longer depends on the request. The wait only reads state, so it keeps working once API and workers are separate processes |
+| 2026-10-31 | `lastSeq` is the run's version: an append claims the next seq through the unique `(runId, seq)` index and retries on a collision; the summary is replaced only if its `lastSeq` is unchanged | Optimistic concurrency without locks, so any number of writers can share a run. A summary left behind by a crash catches up from the events on the next append |
+| 2026-10-31 | The projection rejects any event its state machine does not allow from the current state | A stale writer or an engine bug fails loudly instead of quietly rewriting history |

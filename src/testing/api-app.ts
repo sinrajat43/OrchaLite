@@ -10,6 +10,8 @@ import { startTestMongo } from './mongo';
 export interface TestApi {
   url: string;
   request: (method: string, path: string, body?: unknown) => Promise<{ status: number; body: any }>;
+  /** Stops the app and starts a new one on the same database, as after a process restart */
+  restart: () => Promise<void>;
   close: () => Promise<void>;
 }
 
@@ -21,13 +23,18 @@ export async function startTestApi(): Promise<TestApi> {
   process.env[SECRET_KEY_ENV] = randomBytes(32).toString('base64');
   const mongo = await startTestMongo();
 
-  const app = await NestFactory.create<NestExpressApplication>(ApiModule, { logger: false });
-  configureApp(app);
-  await app.listen(0);
-  const url = (await app.getUrl()).replace('[::1]', '127.0.0.1');
+  const boot = async () => {
+    const started = await NestFactory.create<NestExpressApplication>(ApiModule, { logger: false });
+    configureApp(started);
+    await started.listen(0);
+    return { app: started, url: (await started.getUrl()).replace('[::1]', '127.0.0.1') };
+  };
+  let { app, url } = await boot();
 
   return {
-    url,
+    get url() {
+      return url;
+    },
     request: async (method, path, body) => {
       const response = await fetch(`${url}${path}`, {
         method,
@@ -36,6 +43,10 @@ export async function startTestApi(): Promise<TestApi> {
       });
       const text = await response.text();
       return { status: response.status, body: text ? JSON.parse(text) : undefined };
+    },
+    restart: async () => {
+      await closeApp(app);
+      ({ app, url } = await boot());
     },
     close: async () => {
       await closeApp(app);

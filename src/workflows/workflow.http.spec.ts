@@ -44,11 +44,19 @@ class BoomTask extends TestTask {
   }
 }
 
+@TaskHandler({ name: 'slow', version: 1 })
+class SlowTask extends TestTask {
+  static gate: Promise<string>;
+  async execute() {
+    return SlowTask.gate;
+  }
+}
+
 // Tasks registered outside the engine's modules, the way any new task would be.
 // WorkflowModule alone, plus these, with run history in memory, so no MongoDB connection is needed.
 @Module({
   imports: [RunsModule.forRoot(new InMemoryRunStore()), WorkflowModule],
-  providers: [OneTask, DoubleTask, NothingTask, BoomTask],
+  providers: [OneTask, DoubleTask, NothingTask, BoomTask, SlowTask],
 })
 class TestAppModule {}
 
@@ -57,7 +65,7 @@ describe('HTTP API', () => {
   let baseUrl: string;
 
   const post = (definition: unknown, input?: unknown) =>
-    fetch(`${baseUrl}/workflow/run`, {
+    fetch(`${baseUrl}/workflow/run?wait=true`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ definition, input }),
@@ -93,7 +101,7 @@ describe('HTTP API', () => {
     const tasks = await response.json();
     expect(tasks.map((t: { name: string }) => t.name)).toEqual([
       'boom', 'delay', 'double', 'filter', 'http.request', 'mongo.findOne', 'mongo.insert', 'mongo.upsert', 'nothing',
-      'notify.webhook', 'one', 'transform',
+      'notify.webhook', 'one', 'slow', 'transform',
     ]);
     const http = tasks.find((t: { name: string }) => t.name === 'http.request');
     expect(http).toMatchObject({ version: 1, description: expect.any(String) });
@@ -116,7 +124,7 @@ describe('HTTP API', () => {
       { times: 5 }
     );
 
-    expect(response.status).toBe(201);
+    expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.runId).toEqual(expect.any(String));
     expect(body.steps).toEqual({
@@ -124,6 +132,32 @@ describe('HTTP API', () => {
       b: { status: 'succeeded', output: 10 },
       c: { status: 'succeeded' },
     });
+  });
+
+  it('accepts a run with 202 and a run id before its steps finish, and the result can be polled', async () => {
+    let finish: (value: string) => void;
+    SlowTask.gate = new Promise(resolve => (finish = resolve));
+
+    const response = await fetch(`${baseUrl}/workflow/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ definition: { name: 'async', steps: [{ id: 'slow', task: 'slow', dependsOn: [] }] } }),
+    });
+
+    expect(response.status).toBe(202);
+    const accepted = await response.json();
+    expect(accepted).toEqual({ runId: expect.stringMatching(/^[0-9a-f]{24}$/), status: 'RUNNING' });
+
+    const during = await (await fetch(`${baseUrl}/runs/${accepted.runId}/result`)).json();
+    expect(during.status).toBe('RUNNING');
+
+    finish('done');
+    let result = during;
+    for (let i = 0; i < 200 && result.status === 'RUNNING'; i++) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+      result = await (await fetch(`${baseUrl}/runs/${accepted.runId}/result`)).json();
+    }
+    expect(result).toEqual({ runId: accepted.runId, status: 'SUCCEEDED', steps: { slow: { status: 'succeeded', output: 'done' } } });
   });
 
   it('rejects run input that does not match the declared input', async () => {

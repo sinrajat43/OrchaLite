@@ -45,9 +45,9 @@ describe('connections', () => {
       steps: [{ id: 'call', task: 'http.request', params: { connection: 'upstream', url: '/me' }, dependsOn: [] }],
     };
 
-    const { status, body } = await api.request('POST', '/workflow/run', { definition });
+    const { status, body } = await api.request('POST', '/workflow/run?wait=true', { definition });
 
-    expect(status).toBe(201);
+    expect(status).toBe(200);
     expect(body.steps.call.output.body).toEqual({ auth: 'token s3cret', url: '/me?key=k3y' });
     expect(body.steps.call.output.url).toBe(`${upstream.url}/me`);
   });
@@ -58,7 +58,7 @@ describe('connections', () => {
       steps: [{ id: 'call', task: 'http.request', params: { connection: 'nope' }, dependsOn: [] }],
     };
 
-    const { status, body } = await api.request('POST', '/workflow/run', { definition });
+    const { status, body } = await api.request('POST', '/workflow/run?wait=true', { definition });
 
     expect(status).toBe(500);
     expect(body).toMatchObject({ stepId: 'call', message: 'Task execution failed: Unknown connection "nope"' });

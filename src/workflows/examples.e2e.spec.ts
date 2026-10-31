@@ -16,7 +16,7 @@ describe('example workflows', () => {
     { full_name: 'nestjs/tiny', stargazers_count: 10, language: 'Go', id: 3 },
   ];
 
-  const run = (definition: unknown, input: unknown) => api.request('POST', '/workflow/run', { definition, input });
+  const run = (definition: unknown, input: unknown) => api.request('POST', '/workflow/run?wait=true', { definition, input });
   const inbox = async (channel: string) =>
     (await api.request('GET', '/inbox')).body.filter((m: { channel: string }) => m.channel === channel);
 
@@ -46,7 +46,7 @@ describe('example workflows', () => {
 
     const { status, body } = await run(workflow, { endpoints, webhookUrl: `${api.url}/inbox/uptime` });
 
-    expect(status).toBe(201);
+    expect(status).toBe(200);
     expect(body.steps.check).toMatchObject({ status: 'succeeded', iterations: 3 });
     expect(body.steps.down.output.map((r: { url: string }) => r.url)).toEqual(endpoints.slice(1));
     expect(body.steps.alert.status).toBe('succeeded');
@@ -74,7 +74,7 @@ describe('example workflows', () => {
     const input = { repo: 'acme/app', apiUrl: upstream.url, webhookUrl: `${api.url}/inbox/releases` };
 
     const first = await run(workflow, input);
-    expect(first.status).toBe(201);
+    expect(first.status).toBe(200);
     expect(first.body.steps.notify.status).toBe('succeeded');
     expect(first.body.steps.record.output).toEqual({ created: true, modified: false });
 
@@ -100,7 +100,7 @@ describe('example workflows', () => {
 
     const { status, body } = await run(workflow, { ...input, apiUrl: upstream.url });
 
-    expect(status).toBe(201);
+    expect(status).toBe(200);
     expect(upstream.requests.find(r => r.url.startsWith('/search'))?.url).toBe(
       '/search/repositories?q=org:nestjs&sort=stars&order=desc&per_page=100'
     );

@@ -4,9 +4,9 @@ import { isTruthy, resolveTemplate, Template } from '../expressions/template';
 import { ConnectionLookup, TaskExecutionError, TaskLogger } from '../tasks/task.interface';
 import { formatSchemaErrors, validatorFor } from './schema-validator';
 import { TaskLookup } from './task-registry.service';
-import { CompiledStep, validateWorkflow, WorkflowDefinition, WorkflowStep } from './workflow-definition';
+import { CompiledStep, CompiledWorkflow, validateWorkflow, WorkflowDefinition, WorkflowStep } from './workflow-definition';
 
-/** forEach runs items one after another inside the request, so keep fan-out bounded until B4 */
+/** forEach runs items one after another, so keep fan-out bounded until B4 */
 export const MAX_FOR_EACH_ITEMS = 1000;
 
 export interface StepResult {
@@ -66,6 +66,21 @@ const noConnections: ConnectionLookup = {
 };
 
 /**
+ * The checks a run must pass before it is accepted
+ * @returns the input, on a copy, with defaults filled in
+ * @throws WorkflowDefinitionError if the definition is invalid
+ * @throws RunInputError if the input does not match the declared input
+ */
+export function checkRun(definition: WorkflowDefinition, tasks: TaskLookup, runInput?: Record<string, unknown>): { compiled: CompiledWorkflow; input: Record<string, unknown> } {
+  const compiled = validateWorkflow(definition, tasks);
+  const input = structuredClone(runInput ?? {});
+  if (!compiled.validateInput(input)) {
+    throw new RunInputError(formatSchemaErrors(compiled.validateInput.errors, 'input'));
+  }
+  return { compiled, input };
+}
+
+/**
  * Executes a workflow defined as a DAG of tasks
  * @param definition - Workflow definition
  * @param tasks - Looks up the task each step names
@@ -80,17 +95,11 @@ export async function runWorkflow(
   tasks: TaskLookup,
   options: RunOptions = {}
 ): Promise<WorkflowResults> {
-  const compiled = validateWorkflow(definition, tasks);
+  const { compiled, input } = checkRun(definition, tasks, options.input);
   const runId = options.runId ?? randomUUID();
   const createLogger = options.createLogger ?? ((context: string) => new Logger(context));
   const connections = options.connections ?? noConnections;
   const hooks = options.hooks ?? {};
-
-  // Validation fills in defaults, so work on a copy of the caller's input
-  const input = structuredClone(options.input ?? {});
-  if (!compiled.validateInput(input)) {
-    throw new RunInputError(formatSchemaErrors(compiled.validateInput.errors, 'input'));
-  }
 
   const results: Record<string, StepResult> = {};
 

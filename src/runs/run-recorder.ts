@@ -3,9 +3,42 @@ import { Types } from 'mongoose';
 import { RunHooks } from '../orchestrator/task-runner.util';
 import { WorkflowDefinition } from '../orchestrator/workflow-definition';
 import { TaskExecutionError } from '../tasks/task.interface';
-import { applyEvent, replay } from './run-projection';
-import { RUN_STORE, RunStore } from './run-store';
+import { applyEvent } from './run-projection';
+import { DuplicateEventError, RUN_STORE, RunStore } from './run-store';
 import { RunEvent, RunEventType, RunSummary, WorkflowRef } from './run.types';
+
+const MAX_APPEND_ATTEMPTS = 10;
+
+/**
+ * Appends an event to a run with optimistic concurrency: read the version
+ * (lastSeq), claim the next seq through the unique (runId, seq) index, and on a
+ * collision start over from the newer state. Any number of writers can share a run.
+ * A summary left behind by a crash between the two writes is caught up from the
+ * events first, so it repairs itself on the next append.
+ * @throws IllegalTransitionError if the run's state machine does not allow the event
+ */
+export async function appendRunEvent(store: RunStore, runId: string, type: RunEventType, data: Record<string, any>, at = new Date()): Promise<RunSummary> {
+  // Undefined fields are dropped so the stored event matches what replay sees
+  const clean = Object.fromEntries(Object.entries(data).filter(([, v]) => v !== undefined));
+  for (let attempt = 0; attempt < MAX_APPEND_ATTEMPTS; attempt++) {
+    const stored = await store.getRun(runId);
+    const storedSeq = stored?.lastSeq ?? 0;
+    const current = (await store.getEvents(runId, storedSeq)).reduce<RunSummary | null>(applyEvent, stored);
+    const event: RunEvent = { runId, seq: (current?.lastSeq ?? 0) + 1, type, at, data: clean };
+    const next = applyEvent(current, event);
+    try {
+      // Event first: if the process dies before the summary write, the next append repairs it
+      await store.appendEvent(event);
+    } catch (error) {
+      if (error instanceof DuplicateEventError) continue;
+      throw error;
+    }
+    // A failed check means another writer already moved the summary on; the events still hold this one
+    await store.saveSummary(next, storedSeq);
+    return next;
+  }
+  throw new Error(`Run ${runId}: gave up appending ${type} after ${MAX_APPEND_ATTEMPTS} conflicts`);
+}
 
 /** Step outputs larger than this are stored as a preview only */
 export const MAX_OUTPUT_BYTES = 256 * 1024;
@@ -30,7 +63,6 @@ export function capOutput(output: any): any {
  * workflow; it shows up as a gap in the run's seq numbers instead.
  */
 export class RunHandle {
-  private seq = 0;
   private summary: RunSummary | null = null;
   private hasStarted = false;
 
@@ -73,18 +105,6 @@ export class RunHandle {
     });
   }
 
-  /** Continues an existing timeline, e.g. to close a run left behind by a crash */
-  resumeFrom(events: RunEvent[], stored: RunSummary): void {
-    // Falls back to the stored summary if its events were never written
-    this.summary = replay(events) ?? stored;
-    this.seq = events.reduce((max, e) => Math.max(max, e.seq), stored.lastSeq);
-    this.hasStarted = true;
-  }
-
-  async abandon(reason: string): Promise<void> {
-    await this.record('RunAbandoned', { error: reason });
-  }
-
   private async skipPendingSteps(): Promise<void> {
     for (const step of this.summary?.steps ?? []) {
       if (step.status === 'PENDING') {
@@ -94,16 +114,10 @@ export class RunHandle {
   }
 
   private async record(type: RunEventType, data: Record<string, any>): Promise<void> {
-    // Undefined fields are dropped so the stored event matches what replay sees
-    const clean = Object.fromEntries(Object.entries(data).filter(([, v]) => v !== undefined));
-    const event: RunEvent = { runId: this.runId, seq: ++this.seq, type, at: new Date(), data: clean };
     try {
-      this.summary = applyEvent(this.summary, event);
-      // Event first: if the process dies before the summary write, replaying events repairs it
-      await this.store.appendEvent(event);
-      await this.store.saveSummary(this.summary);
+      this.summary = await appendRunEvent(this.store, this.runId, type, data);
     } catch (error) {
-      console.error(`Run history: failed to record ${type} (seq ${event.seq}) for run ${this.runId}:`, error);
+      console.error(`Run history: failed to record ${type} for run ${this.runId}:`, error);
     }
   }
 }
@@ -121,17 +135,15 @@ export class RunRecorder implements OnApplicationBootstrap {
   }
 
   /**
-   * Runs only live inside a request, so any run still RUNNING at startup
-   * belongs to a process that died. Repair its summary from the events and
-   * close it as ABANDONED.
+   * Runs execute inside the process that started them, so any run still
+   * RUNNING at startup belongs to a process that died. Close it as ABANDONED;
+   * appending the event repairs its summary from the events.
    */
   async abandonUnfinishedRuns(): Promise<string[]> {
     const abandoned: string[] = [];
     for (const run of await this.store.findRunning()) {
       try {
-        const handle = new RunHandle(run.id, this.store);
-        handle.resumeFrom(await this.store.getEvents(run.id), run);
-        await handle.abandon('The server stopped while this run was in progress');
+        await appendRunEvent(this.store, run.id, 'RunAbandoned', { error: 'The server stopped while this run was in progress' });
         abandoned.push(run.id);
       } catch (error) {
         console.error(`Run history: could not close unfinished run ${run.id}:`, error);

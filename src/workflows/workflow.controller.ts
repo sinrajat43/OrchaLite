@@ -1,14 +1,21 @@
-import { Controller, Post, Body } from '@nestjs/common';
-import { WorkflowService } from './workflow.service';
+import { Controller, Post, Body, HttpCode, Query, Res } from '@nestjs/common';
+import { Response } from 'express';
+import { AcceptedRun, WorkflowService } from './workflow.service';
 import { RunWorkflowDto } from './dto/workflow.dto';
-import { WorkflowResults } from '../orchestrator/task-runner.util';
+import { RunResult } from '../runs/run-result';
 
 @Controller('workflow')
 export class WorkflowController {
   constructor(private readonly workflowService: WorkflowService) {}
 
   @Post('run')
-  runWorkflow(@Body() dto: RunWorkflowDto): Promise<WorkflowResults> {
-    return this.workflowService.run(dto.definition, dto.input);
+  @HttpCode(202)
+  async runWorkflow(
+    @Body() dto: RunWorkflowDto,
+    @Query('wait') wait: string | undefined,
+    @Res({ passthrough: true }) response: Response
+  ): Promise<AcceptedRun | RunResult> {
+    const accepted = await this.workflowService.start(dto.definition, dto.input);
+    return this.workflowService.respond(accepted, wait, response);
   }
 }

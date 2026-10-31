@@ -1,4 +1,29 @@
-import { RunEvent, RunSummary, StepSummary } from './run.types';
+import { RunEvent, RunEventType, RunStatus, RunSummary, StepStatus, StepSummary } from './run.types';
+
+/** Which status an event may move a run from; anything else is a bug or a stale writer */
+const RUN_TRANSITIONS: Partial<Record<RunEventType, RunStatus[]>> = {
+  RunSucceeded: ['RUNNING'],
+  RunFailed: ['RUNNING'],
+  RunAbandoned: ['RUNNING'],
+};
+
+/** Which status an event may move a step from */
+const STEP_TRANSITIONS: Partial<Record<RunEventType, StepStatus[]>> = {
+  StepStarted: ['PENDING'],
+  StepSucceeded: ['RUNNING'],
+  StepFailed: ['RUNNING'],
+  StepSkipped: ['PENDING', 'RUNNING'],
+};
+
+/**
+ * An event that the run's state machine does not allow from its current state
+ */
+export class IllegalTransitionError extends Error {
+  constructor(event: RunEvent, from: string) {
+    super(`Run ${event.runId}: ${event.type} is not allowed from ${from}`);
+    this.name = 'IllegalTransitionError';
+  }
+}
 
 const msBetween = (from: Date | undefined, to: Date): number | undefined =>
   from ? to.getTime() - new Date(from).getTime() : undefined;
@@ -28,10 +53,18 @@ export function applyEvent(summary: RunSummary | null, event: RunEvent): RunSumm
     throw new Error(`Event ${event.type} (seq ${event.seq}) for run ${event.runId} has no RunStarted before it`);
   }
 
+  const allowedFrom = RUN_TRANSITIONS[event.type];
+  if (allowedFrom && !allowedFrom.includes(summary.status)) {
+    throw new IllegalTransitionError(event, summary.status);
+  }
+
   const next: RunSummary = { ...summary, steps: summary.steps.map(step => ({ ...step })), lastSeq: event.seq };
   const step = (): StepSummary => {
     const found = next.steps.find(s => s.id === event.data.stepId);
     if (!found) throw new Error(`Run ${event.runId} has no step "${event.data.stepId}"`);
+    if (!STEP_TRANSITIONS[event.type].includes(found.status)) {
+      throw new IllegalTransitionError(event, `step "${found.id}" ${found.status}`);
+    }
     return found;
   };
 
