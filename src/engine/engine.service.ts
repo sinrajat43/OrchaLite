@@ -1,4 +1,6 @@
 import { BeforeApplicationShutdown, Inject, Injectable, OnApplicationBootstrap } from '@nestjs/common';
+import { randomBytes } from 'crypto';
+import { hostname } from 'os';
 import { ConnectionsService } from '../connections/connections.service';
 import { TaskRegistry } from '../orchestrator/task-registry.service';
 import { RUN_STORE, RunStore } from '../runs/run-store';
@@ -7,6 +9,10 @@ import { ENGINE_OPTIONS, EngineOptions } from './engine-options';
 import { EngineSignals } from './engine-signals';
 import { RATE_LIMITER, RateLimiter } from './rate-limiter';
 import { Scheduler } from './scheduler';
+import { LeaderElection } from './leader-election';
+import { LEADER_LOCK, LeaderLock } from './leader-lock';
+import { LeaderState } from './leader-state';
+import { OutboxRelay, WebhookEventPublisher } from './outbox';
 import { STEP_QUEUE, StepQueue } from './step-queue';
 import { Worker } from './worker';
 
@@ -18,12 +24,16 @@ import { Worker } from './worker';
 export class EngineService implements OnApplicationBootstrap, BeforeApplicationShutdown {
   private scheduler?: Scheduler;
   private worker?: Worker;
+  private election?: LeaderElection;
+  private outbox?: OutboxRelay;
 
   constructor(
     @Inject(RUN_STORE) private readonly store: RunStore,
     @Inject(STEP_QUEUE) private readonly queue: StepQueue,
     @Inject(RATE_LIMITER) private readonly limiter: RateLimiter,
+    @Inject(LEADER_LOCK) private readonly lock: LeaderLock,
     @Inject(ENGINE_OPTIONS) private readonly options: EngineOptions,
+    private readonly leader: LeaderState,
     private readonly tasks: TaskRegistry,
     private readonly connections: ConnectionsService,
     private readonly signals: EngineSignals
@@ -33,8 +43,17 @@ export class EngineService implements OnApplicationBootstrap, BeforeApplicationS
     const { store, queue, limiter, tasks, connections, signals, options } = this;
     if (options.roles.includes('scheduler')) {
       await this.abandonLegacyRuns();
-      this.scheduler = new Scheduler({ store, queue, tasks, signals, options });
+      // Several schedulers can run for failover; the one holding the lock does the work
+      this.election = new LeaderElection(this.lock, `${hostname()}:${process.pid}:${randomBytes(3).toString('hex')}`, options.leaderTtlMs);
+      this.leader.source = this.election;
+      await this.election.start();
+      const isLeader = () => this.election.isLeader;
+      this.scheduler = new Scheduler({ store, queue, tasks, signals, options, isLeader });
       this.scheduler.start();
+      if (options.eventsWebhookUrl) {
+        this.outbox = new OutboxRelay(store, new WebhookEventPublisher(options.eventsWebhookUrl), options.schedulerIntervalMs, isLeader);
+        this.outbox.start();
+      }
     }
     if (options.roles.includes('worker')) {
       this.worker = new Worker({ store, queue, tasks, connections, limiter, signals, options });
@@ -45,6 +64,8 @@ export class EngineService implements OnApplicationBootstrap, BeforeApplicationS
   async beforeApplicationShutdown(): Promise<void> {
     await this.worker?.stop();
     await this.scheduler?.stop();
+    await this.outbox?.stop();
+    await this.election?.stop();
   }
 
   /**

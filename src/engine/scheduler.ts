@@ -10,7 +10,7 @@ import { CompiledRuns } from './compiled-runs';
 import { EngineOptions } from './engine-options';
 import { EngineSignals } from './engine-signals';
 import { StepQueue } from './step-queue';
-import { isFailure, isFinished, newStepRun, StepRun } from './step-run';
+import { compensationId, isFailure, isFinished, newStepRun, StepRun } from './step-run';
 import { MAX_ROW_OUTPUT_BYTES } from './worker';
 
 /** forEach items are stored one row each, so keep fan-out bounded */
@@ -22,6 +22,8 @@ export interface SchedulerDeps {
   tasks: TaskLookup;
   signals: EngineSignals;
   options: Pick<EngineOptions, 'schedulerIntervalMs' | 'runWindow' | 'taskLimits'>;
+  /** With several schedulers, only the leader acts; alone, it always does */
+  isLeader?: () => boolean;
 }
 
 const SKIP_AFTER_FAILURE = 'an earlier step failed';
@@ -66,8 +68,12 @@ export class Scheduler {
     await this.admitting?.promise;
   }
 
+  private get leading(): boolean {
+    return this.deps.isLeader?.() ?? true;
+  }
+
   private tick(): void {
-    if (this.ticking) return;
+    if (this.ticking || !this.leading) return;
     this.ticking = this.visitActiveRuns().finally(() => (this.ticking = undefined));
   }
 
@@ -85,6 +91,7 @@ export class Scheduler {
 
   /** Brings one run up to date; never throws. Concurrent calls collapse into one more pass. */
   advance(runId: string): Promise<void> {
+    if (!this.leading) return Promise.resolve();
     const current = this.advancing.get(runId);
     if (current) {
       current.again = true;
@@ -115,7 +122,7 @@ export class Scheduler {
   private async pass(runId: string): Promise<boolean> {
     const { store } = this.deps;
     const run = await store.getRun(runId);
-    if (!run || run.status !== 'RUNNING' || !run.execution) return false;
+    if (!run || (run.status !== 'RUNNING' && run.status !== 'COMPENSATING') || !run.execution) return false;
 
     let steps: Map<string, CompiledStep>;
     try {
@@ -125,7 +132,12 @@ export class Scheduler {
       return false;
     }
 
-    const rows = await store.listStepRuns(runId);
+    const allRows = await store.listStepRuns(runId);
+    const rows = allRows.filter(row => !row.compensation);
+    if (run.status === 'COMPENSATING') {
+      return this.compensate(run, steps, rows, allRows.filter(row => row.compensation));
+    }
+
     const mine = new Map(rows.filter(row => row.index === undefined).map(row => [row.stepId, row]));
     const items = rows.filter(row => row.index !== undefined);
 
@@ -376,8 +388,78 @@ export class Scheduler {
     if (!everyStep || !rows.every(isFinished)) return false;
 
     const failed = [...steps.keys()].map(id => mine.get(id)).find(isFailure);
-    if (failed) await appendRunEvent(store, run.id, 'RunFailed', { failedStepId: failed.stepId, error: failed.error });
-    else await appendRunEvent(store, run.id, 'RunSucceeded', {});
+    if (!failed) {
+      await appendRunEvent(store, run.id, 'RunSucceeded', {});
+      return false;
+    }
+    const ending = { failedStepId: failed.stepId, error: failed.error };
+    const anythingToUndo = [...steps.values()].some(({ step, compensate }) => compensate && mine.get(step.id)?.status === 'SUCCEEDED');
+    await appendRunEvent(store, run.id, anythingToUndo ? 'RunCompensating' : 'RunFailed', ending);
+    return anythingToUndo;
+  }
+
+  /**
+   * The saga's way back: undoes each finished step that says how, latest first.
+   * A step is only undone after everything built on it has been. If an undo
+   * fails, nothing further is attempted, because what remains may depend on it,
+   * and the run ends needing a person.
+   */
+  private async compensate(run: RunSummary, steps: Map<string, CompiledStep>, rows: StepRun[], undoRows: StepRun[]): Promise<boolean> {
+    const { store } = this.deps;
+    const mine = new Map(rows.filter(row => row.index === undefined).map(row => [row.stepId, row]));
+    const undos = new Map(undoRows.map(row => [row.stepId, row]));
+    const toUndo = [...steps.values()].filter(({ step, compensate }) => compensate && mine.get(step.id)?.status === 'SUCCEEDED');
+
+    let summary = run;
+    let wrote = false;
+    for (const row of undoRows) {
+      const shown = () => summary.steps.find(step => step.id === row.stepId);
+      if (!shown().compensation && row.startedAt) {
+        summary = await appendRunEvent(store, run.id, 'CompensationStarted', { stepId: row.stepId, task: row.task }, new Date(row.startedAt));
+        wrote = true;
+      }
+      if (shown().compensation === 'RUNNING' && isFinished(row)) {
+        const at = new Date(row.endedAt ?? Date.now());
+        if (row.status === 'SUCCEEDED') {
+          const output = (await store.getStepRun(row.id))?.output;
+          summary = await appendRunEvent(store, run.id, 'CompensationSucceeded', { stepId: row.stepId, output: capOutput(output) }, at);
+        } else {
+          summary = await appendRunEvent(store, run.id, 'CompensationFailed', { stepId: row.stepId, error: row.error }, at);
+        }
+        wrote = true;
+      }
+    }
+    if (wrote) return true;
+
+    const failedUndo = undoRows.find(isFailure);
+    if (undoRows.every(isFinished)) {
+      if (failedUndo) {
+        await appendRunEvent(store, run.id, 'RunCompensationFailed', { compensationError: failedUndo.error });
+        return false;
+      }
+      if (undoRows.length === toUndo.length) {
+        await appendRunEvent(store, run.id, 'RunCompensated', {});
+        return false;
+      }
+    }
+
+    if (!failedUndo) {
+      const created = toUndo
+        .filter(({ step }) => !undos.has(step.id))
+        .filter(({ step }) =>
+          // Everything built on this step that needs undoing must be undone first
+          toUndo.every(later => !later.upstream.has(step.id) || undos.get(later.step.id)?.status === 'SUCCEEDED')
+        )
+        .map(({ step, compensate }) =>
+          newStepRun({ id: compensationId(run.id, step.id), runId: run.id, stepId: step.id, task: compensate.task, workflow: run.name, compensation: true })
+        );
+      if (created.length) {
+        await store.insertStepRuns(created);
+        await this.admit();
+        return true;
+      }
+    }
+    await this.admit();
     return false;
   }
 }

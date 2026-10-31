@@ -41,6 +41,8 @@ export interface StepRun {
   /** Set on one item of a forEach step */
   index?: number;
   item?: unknown;
+  /** This row undoes step stepId, after a later step failed */
+  compensation?: boolean;
   /** A forEach step's own row: it adds up its items and is never executed itself */
   fanOut?: boolean;
   status: StepRunStatus;
@@ -72,6 +74,8 @@ export interface StepRun {
 
 export const stepRunId = (runId: string, stepId: string, index?: number): string =>
   index === undefined ? `${runId}:${stepId}` : `${runId}:${stepId}:${index}`;
+
+export const compensationId = (runId: string, stepId: string): string => `${stepRunId(runId, stepId)}:compensate`;
 
 /** A new row, before anything has happened to it */
 export function newStepRun(fields: Pick<StepRun, 'runId' | 'stepId' | 'task'> & Partial<StepRun>): StepRun {

@@ -1918,7 +1918,7 @@ async function followRun(runId, onProgress) {
   for (;;) {
     const r = await api('GET', `/runs/${runId}/result`);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    if (r.body.status !== 'RUNNING') return r.body;
+    if (r.body.status !== 'RUNNING' && r.body.status !== 'COMPENSATING') return r.body;
     onProgress(r.body);
     await new Promise(resolve => setTimeout(resolve, 300));
   }

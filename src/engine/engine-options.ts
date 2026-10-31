@@ -25,6 +25,10 @@ export interface EngineOptions {
   maxLostDeliveries: number;
   /** How often a worker looks for work when idle */
   workerPollMs: number;
+  /** How long a leader keeps its place without renewing; a dead leader is replaced after this */
+  leaderTtlMs: number;
+  /** Where the outbox publishes run events; nothing is published without it */
+  eventsWebhookUrl?: string;
   /** How often the scheduler looks over all active runs */
   schedulerIntervalMs: number;
 }
@@ -58,6 +62,8 @@ export function engineOptionsFromEnv(env: NodeJS.ProcessEnv = process.env): Engi
     defaultStepTimeoutMs: positive(env.ORCHALITE_STEP_TIMEOUT_MS, 5 * 60_000),
     maxLostDeliveries: positive(env.ORCHALITE_MAX_LOST_DELIVERIES, 5),
     workerPollMs: positive(env.ORCHALITE_WORKER_POLL_MS, 250),
+    leaderTtlMs: positive(env.ORCHALITE_LEADER_TTL_MS, 15_000),
+    eventsWebhookUrl: env.ORCHALITE_EVENTS_WEBHOOK_URL || undefined,
     schedulerIntervalMs: positive(env.ORCHALITE_SCHEDULER_INTERVAL_MS, 500),
   };
 }

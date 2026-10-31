@@ -31,6 +31,8 @@ export interface WorkerDeps {
 /** Well under MongoDB's 16 MB document limit, so a large output fails the step and not the write */
 export const MAX_ROW_OUTPUT_BYTES = 8 * 1024 * 1024;
 
+const COMPENSATION_RETRY: RetryPolicy = { maxAttempts: 5 };
+
 const DEFAULT_BACKOFF_MS = 1000;
 const DEFAULT_MULTIPLIER = 2;
 const DEFAULT_MAX_BACKOFF_MS = 5 * 60_000;
@@ -197,7 +199,8 @@ export class Worker {
   private async afterFailure(row: StepRun, claim: Claim, failure: StepFailure): Promise<Partial<StepRun> | null> {
     const { store, queue, signals } = this.deps;
     const run = await store.getRun(row.runId);
-    const policy = this.compiled.steps(run).get(row.stepId)?.step.retry;
+    const step = this.compiled.steps(run).get(row.stepId)?.step;
+    const policy = row.compensation ? step?.compensate?.retry ?? COMPENSATION_RETRY : step?.retry;
     const maxAttempts = policy?.maxAttempts ?? 1;
     const attempt = (row.failures?.length ?? 0) + 1;
 
@@ -282,16 +285,18 @@ export class Worker {
     const task = tasks.get(row.task);
     if (!compiled || !task) throw new StepFailure(`This worker has no task "${row.task}"`);
 
-    const outputs = await store.getStepOutputs(row.runId, [...compiled.upstream]);
+    // Undoing a step can also read what the step itself produced
+    const visible = row.compensation ? [...compiled.upstream, row.stepId] : [...compiled.upstream];
+    const outputs = await store.getStepOutputs(row.runId, visible);
     const scope = {
       input: run.input ?? {},
-      steps: Object.fromEntries([...compiled.upstream].map(id => [id, { output: outputs[id] }])),
+      steps: Object.fromEntries(visible.map(id => [id, { output: outputs[id] }])),
       ...(row.index === undefined ? {} : { item: row.item, index: row.index }),
     };
 
     let params: Record<string, unknown>;
     try {
-      params = (await resolveTemplate(compiled.params, scope, 'params')) as Record<string, unknown>;
+      params = (await resolveTemplate(row.compensation ? compiled.compensate.params : compiled.params, scope, 'params')) as Record<string, unknown>;
     } catch (error) {
       throw new StepFailure(`Could not resolve params: ${(error as Error).message}`);
     }
@@ -303,7 +308,7 @@ export class Worker {
     }
 
     const createLogger = this.deps.createLogger ?? ((context: string) => new Logger(context));
-    const timeoutMs = compiled.step.timeoutMs ?? options.defaultStepTimeoutMs;
+    const timeoutMs = (row.compensation ? compiled.step.compensate.timeoutMs : compiled.step.timeoutMs) ?? options.defaultStepTimeoutMs;
     const timedOut = new Error(`Timed out after ${timeoutMs} ms`);
     const timer = setTimeout(() => abort.abort(timedOut), timeoutMs);
     // A task that ignores its signal must still give up its slot, so the abort ends the wait for it
@@ -319,7 +324,7 @@ export class Worker {
         signal: abort.signal,
         attempt: (row.failures?.length ?? 0) + 1,
         idempotencyKey: row.id,
-        logger: createLogger(`${row.task} run=${row.runId} step=${row.stepId}${label}`),
+        logger: createLogger(`${row.task} run=${row.runId} step=${row.stepId}${row.compensation ? ' compensate' : ''}${label}`),
         connections: this.limitedConnections(),
         resumed: row.resumed === true,
       });

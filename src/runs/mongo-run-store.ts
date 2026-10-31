@@ -10,11 +10,15 @@ const RunEventSchema = new Schema(
     type: { type: String, required: true },
     at: { type: Date, required: true },
     data: { type: Schema.Types.Mixed, default: {} },
+    // The event log doubles as the outbox: this is written with the event, in one insert
+    published: { type: Boolean, default: false },
   },
   { versionKey: false, minimize: false }
 );
 // Orders the timeline and turns a duplicate append into an error instead of a doubled event
 RunEventSchema.index({ runId: 1, seq: 1 }, { unique: true });
+// Only unpublished events are in this index, so it stays small however long history gets
+RunEventSchema.index({ published: 1, _id: 1 }, { name: 'unpublished', partialFilterExpression: { published: false } });
 
 const StepSummarySchema = new Schema(
   {
@@ -28,6 +32,8 @@ const StepSummarySchema = new Schema(
     reason: String,
     iterations: Number,
     retries: Number,
+    compensation: String,
+    compensationError: String,
   },
   { _id: false }
 );
@@ -66,6 +72,7 @@ const StepRunSchema = new Schema(
     workflowLimit: Number,
     index: Number,
     item: Schema.Types.Mixed,
+    compensation: Boolean,
     fanOut: Boolean,
     status: String,
     version: Number,
@@ -102,7 +109,7 @@ const StepRunModel: Model<any> = models.StepRun ?? model('StepRun', StepRunSchem
 const RunRequestModel: Model<any> = models.RunRequest ?? model('RunRequest', RunRequestSchema, 'run_requests');
 
 const toRow = ({ _id, ...row }: any): StepRun => ({ id: _id, ...row });
-const toEvent = ({ _id, ...event }: any): RunEvent => event;
+const toEvent = ({ _id, published, ...event }: any): RunEvent => event;
 const toSummary = ({ _id, ...run }: any): RunSummary => ({ id: _id, ...run });
 
 /**
@@ -151,7 +158,7 @@ export class MongoRunStore implements RunStore {
   }
 
   async findRunning(): Promise<RunSummary[]> {
-    const runs = await RunSummaryModel.find({ status: 'RUNNING' }).lean();
+    const runs = await RunSummaryModel.find({ status: { $in: ['RUNNING', 'COMPENSATING'] } }).lean();
     return runs.map(toSummary);
   }
 
@@ -176,7 +183,7 @@ export class MongoRunStore implements RunStore {
   }
 
   async getStepOutputs(runId: string, stepIds?: string[]): Promise<Record<string, unknown>> {
-    const filter: Record<string, any> = { runId, index: null };
+    const filter: Record<string, any> = { runId, index: null, compensation: { $ne: true } };
     if (stepIds) filter.stepId = { $in: stepIds };
     const rows = await StepRunModel.find(filter, { stepId: 1, output: 1 }).lean<any[]>();
     return Object.fromEntries(rows.map(row => [row.stepId, row.output]));
@@ -215,6 +222,19 @@ export class MongoRunStore implements RunStore {
       { $group: { _id: { runId: '$runId', stepId: '$stepId', task: '$task', workflow: '$workflow' }, count: { $sum: 1 } } },
     ]);
     return groups.map(({ _id, count }) => ({ ..._id, count }));
+  }
+
+  async listUnpublishedEvents(limit: number): Promise<RunEvent[]> {
+    const events = await RunEventModel.find({ published: false }).sort({ _id: 1 }).limit(limit).lean();
+    return events.map(toEvent);
+  }
+
+  async markEventsPublished(events: RunEvent[]): Promise<void> {
+    if (!events.length) return;
+    await RunEventModel.bulkWrite(
+      events.map(({ runId, seq }) => ({ updateOne: { filter: { runId, seq }, update: { $set: { published: true } } } })),
+      { ordered: false }
+    );
   }
 
   async listDeadLetters(limit: number): Promise<StepRun[]> {

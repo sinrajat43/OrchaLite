@@ -274,10 +274,10 @@ decide what a persisted step record has to store.
   - Done when: a 1,000-item fan-out respects a configured limit and one large
     run cannot starve others.
 
-- [ ] **B5. Sagas and triggers**
-  - Build: compensation steps that undo earlier steps on failure; cron
-    triggers guarded by a leader lock; webhook triggers with signature
-    verification; a transactional outbox for run events.
+- [x] **B5. Sagas and triggers** (done 2026-10-31)
+  - Build: `compensate` on a step, undoing finished steps in reverse on failure;
+    cron triggers guarded by a leader lock; webhook triggers (`POST /hooks/:name`)
+    with signature verification; `run_events` as a transactional outbox.
   - Teaches: consistency without distributed transactions, leader election,
     reliable event publishing.
   - Done when: the webhook automation use case rolls back cleanly when its
@@ -389,3 +389,10 @@ Several of these come back in later horizons, noted on each item.
 | 2026-10-31 | A retry's backoff holds its slot, while a stored wait does not | Retries would otherwise all come back at once past the limit. A stored wait does no work, and cannot be admitted again |
 | 2026-10-31 | A workflow's `concurrency` limits steps in flight across its runs, not how many runs overlap | It is what the roadmap asked for. Limiting overlapping runs, with a policy for what happens to the extra ones, is still open |
 | 2026-10-31 | Connection rate limits use GCRA, one timestamp per connection updated atomically; a limited step gives up its slot and returns when a call is allowed, using no attempt | No counters to reset and no window-edge bursts. Nothing happened, so it is not a failure |
+| 2026-10-31 | A saga undoes finished steps that declare `compensate`, each after everything built on it; a failed undo stops the way back and ends the run `COMPENSATION_FAILED` | Order matters when one step built on another. Carrying on past a failed undo could undo things in a state nobody planned for, so it stops and asks for a person |
+| 2026-10-31 | The step that failed is not undone, and `compensate` cannot be combined with `forEach` | A failed step is expected to have had no lasting effect, or to be safe to repeat. Undoing part of a fan-out needs its own design, and no use case needs it yet |
+| 2026-10-31 | Undos retry 5 times by default, even where the step itself has no `retry` | A rollback that gives up leaves real inconsistency |
+| 2026-10-31 | One scheduler leads through a lease in `engine_locks`; the others stand by. Everything it does stays safe to overlap | A lease cannot rule out two leaders for a moment, so it is not trusted for correctness. It makes limits exact and avoids duplicate work; idempotency keys keep overlaps harmless |
+| 2026-10-31 | A cron run's idempotency key names its scheduled time; a trigger that missed several times fires once. Cron is UTC, with an optional seconds field | Moving the trigger on and starting the run cannot be atomic, and the key makes that safe. A burst of catch-up runs after an outage is rarely what anyone wants |
+| 2026-10-31 | Webhook signatures are HMAC-SHA256 over `timestamp.rawBody`, compared in constant time, with 5 minutes of tolerance; secrets are encrypted at rest and a generated one is shown once | Signing the exact bytes received means re-serialising cannot break it or hide a change, and the timestamp limits replay. A repeated delivery id is one run |
+| 2026-10-31 | `run_events` is the outbox, with a `published` flag behind a partial index; a relay publishes at-least-once to a webhook, with Kafka as a later adapter | The usual outbox exists to write a change and its event atomically. In an event log they are one insert, so no transaction is needed. Consumers deduplicate by `(runId, seq)` |

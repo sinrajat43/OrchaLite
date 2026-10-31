@@ -26,7 +26,7 @@ export async function startTestApi(): Promise<TestApi> {
   const mongo = await startTestMongo();
 
   const boot = async () => {
-    const started = await NestFactory.create<NestExpressApplication>(ApiModule, { logger: false });
+    const started = await NestFactory.create<NestExpressApplication>(ApiModule, { logger: false, rawBody: true });
     configureApp(started);
     await started.listen(0);
     return { app: started, url: (await started.getUrl()).replace('[::1]', '127.0.0.1') };

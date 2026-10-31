@@ -7,5 +7,6 @@ import { DefinitionStore } from './definition-store.service';
   imports: [WorkflowModule],
   controllers: [DefinitionsController],
   providers: [DefinitionStore],
+  exports: [DefinitionStore],
 })
 export class DefinitionsModule {}

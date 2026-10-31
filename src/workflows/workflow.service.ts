@@ -109,6 +109,7 @@ export class WorkflowService {
     if (result.status !== 'SUCCEEDED') {
       throw new InternalServerErrorException({
         message: result.error,
+        status: result.status,
         stepId: result.failedStepId,
         task: (await this.runs.getRun(accepted.runId))?.steps.find(step => step.id === result.failedStepId)?.task,
         runId: result.runId,

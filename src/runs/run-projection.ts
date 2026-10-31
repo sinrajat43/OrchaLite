@@ -5,6 +5,9 @@ const RUN_TRANSITIONS: Partial<Record<RunEventType, RunStatus[]>> = {
   RunSucceeded: ['RUNNING'],
   RunFailed: ['RUNNING'],
   RunAbandoned: ['RUNNING'],
+  RunCompensating: ['RUNNING'],
+  RunCompensated: ['COMPENSATING'],
+  RunCompensationFailed: ['COMPENSATING'],
 };
 
 /** Which status an event may move a step from */
@@ -13,6 +16,14 @@ const STEP_TRANSITIONS: Partial<Record<RunEventType, StepStatus[]>> = {
   StepSucceeded: ['RUNNING'],
   StepFailed: ['RUNNING'],
   StepSkipped: ['PENDING', 'RUNNING'],
+};
+
+const RUN_ENDINGS: Partial<Record<RunEventType, RunStatus>> = {
+  RunSucceeded: 'SUCCEEDED',
+  RunFailed: 'FAILED',
+  RunAbandoned: 'ABANDONED',
+  RunCompensated: 'COMPENSATED',
+  RunCompensationFailed: 'COMPENSATION_FAILED',
 };
 
 /**
@@ -77,6 +88,22 @@ export function applyEvent(summary: RunSummary | null, event: RunEvent): RunSumm
     return next;
   }
 
+  if (event.type === 'CompensationStarted' || event.type === 'CompensationSucceeded' || event.type === 'CompensationFailed') {
+    const undone = next.steps.find(s => s.id === event.data.stepId);
+    if (!undone) throw new Error(`Run ${event.runId} has no step "${event.data.stepId}"`);
+    undone.compensation = event.type === 'CompensationStarted' ? 'RUNNING' : event.type === 'CompensationSucceeded' ? 'SUCCEEDED' : 'FAILED';
+    if (event.data.error) undone.compensationError = event.data.error;
+    return next;
+  }
+
+  // The run failed, and steps are being undone: it keeps why, and ends only once that is over
+  if (event.type === 'RunCompensating') {
+    next.status = 'COMPENSATING';
+    next.failedStepId = event.data.failedStepId;
+    next.error = event.data.error;
+    return next;
+  }
+
   switch (event.type) {
     case 'StepStarted':
       Object.assign(step(), { status: 'RUNNING', startedAt: event.at });
@@ -107,7 +134,9 @@ export function applyEvent(summary: RunSummary | null, event: RunEvent): RunSumm
     case 'RunSucceeded':
     case 'RunFailed':
     case 'RunAbandoned':
-      next.status = event.type === 'RunSucceeded' ? 'SUCCEEDED' : event.type === 'RunFailed' ? 'FAILED' : 'ABANDONED';
+    case 'RunCompensated':
+    case 'RunCompensationFailed':
+      next.status = RUN_ENDINGS[event.type];
       next.endedAt = event.at;
       next.durationMs = msBetween(next.startedAt, event.at);
       if (event.data.failedStepId) next.failedStepId = event.data.failedStepId;

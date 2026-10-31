@@ -11,6 +11,7 @@ export class InMemoryRunStore implements RunStore {
   private readonly runs = new Map<string, RunSummary>();
   private readonly stepRuns = new Map<string, StepRun>();
   private readonly requests = new Map<string, RunRequest>();
+  private readonly published = new Set<string>();
 
   async appendEvent(event: RunEvent): Promise<void> {
     if (this.events.some(e => e.runId === event.runId && e.seq === event.seq)) {
@@ -46,7 +47,7 @@ export class InMemoryRunStore implements RunStore {
   }
 
   async findRunning(): Promise<RunSummary[]> {
-    return [...this.runs.values()].filter(run => run.status === 'RUNNING').map(run => structuredClone(run));
+    return [...this.runs.values()].filter(run => run.status === 'RUNNING' || run.status === 'COMPENSATING').map(run => structuredClone(run));
   }
 
   async insertStepRuns(rows: StepRun[]): Promise<void> {
@@ -65,7 +66,7 @@ export class InMemoryRunStore implements RunStore {
   }
 
   async getStepOutputs(runId: string, stepIds?: string[]): Promise<Record<string, unknown>> {
-    const rows = this.rowsOf(runId).filter(row => row.index === undefined && (!stepIds || stepIds.includes(row.stepId)));
+    const rows = this.rowsOf(runId).filter(row => row.index === undefined && !row.compensation && (!stepIds || stepIds.includes(row.stepId)));
     return Object.fromEntries(rows.map(row => [row.stepId, structuredClone(row.output)]));
   }
 
@@ -107,6 +108,17 @@ export class InMemoryRunStore implements RunStore {
       groups.set(key, group);
     }
     return [...groups.values()];
+  }
+
+  async listUnpublishedEvents(limit: number): Promise<RunEvent[]> {
+    return this.events
+      .filter(e => !this.published.has(`${e.runId}:${e.seq}`))
+      .slice(0, limit)
+      .map(e => structuredClone(e));
+  }
+
+  async markEventsPublished(events: RunEvent[]): Promise<void> {
+    events.forEach(e => this.published.add(`${e.runId}:${e.seq}`));
   }
 
   async listDeadLetters(limit: number): Promise<StepRun[]> {

@@ -1,4 +1,4 @@
-export const RUN_STATUSES = ['RUNNING', 'SUCCEEDED', 'FAILED', 'ABANDONED'] as const;
+export const RUN_STATUSES = ['RUNNING', 'SUCCEEDED', 'FAILED', 'ABANDONED', 'COMPENSATING', 'COMPENSATED', 'COMPENSATION_FAILED'] as const;
 export type RunStatus = typeof RUN_STATUSES[number];
 
 export type StepStatus = 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'DEAD_LETTERED' | 'SKIPPED';
@@ -12,7 +12,13 @@ export type RunEventType =
   | 'StepSkipped'
   | 'RunSucceeded'
   | 'RunFailed'
-  | 'RunAbandoned';
+  | 'RunAbandoned'
+  | 'RunCompensating'
+  | 'CompensationStarted'
+  | 'CompensationSucceeded'
+  | 'CompensationFailed'
+  | 'RunCompensated'
+  | 'RunCompensationFailed';
 
 /**
  * One immutable entry in a run's timeline. Events are the source of truth;
@@ -41,6 +47,9 @@ export interface StepSummary {
   iterations?: number;
   /** Failed attempts that were retried, across all items */
   retries?: number;
+  /** Set once undoing this step has started */
+  compensation?: 'RUNNING' | 'SUCCEEDED' | 'FAILED';
+  compensationError?: string;
 }
 
 /** The stored workflow version a run came from */

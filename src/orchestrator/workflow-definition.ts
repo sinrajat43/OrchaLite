@@ -23,6 +23,16 @@ export interface WorkflowStep {
   timeoutMs?: number;
   /** forEach steps: how many items may be in flight at once */
   concurrency?: number;
+  /** What undoes this step if a later step fails; can read this step's own output */
+  compensate?: Compensation;
+}
+
+export interface Compensation {
+  task: string;
+  params?: Record<string, unknown>;
+  /** A rollback should try hard: 5 attempts by default */
+  retry?: RetryPolicy;
+  timeoutMs?: number;
 }
 
 export interface RetryPolicy {
@@ -51,6 +61,7 @@ export interface CompiledStep {
   forEach?: Template;
   /** Every step this one depends on, directly or not */
   upstream: Set<string>;
+  compensate?: { task: string; params: Template };
 }
 
 export interface CompiledWorkflow {
@@ -243,19 +254,42 @@ export function validateWorkflow(definition: WorkflowDefinition, tasks: TaskLook
       ...control.flatMap(c => c?.expressions ?? []).map(e => ({ ...e, rootNames: [] as string[] })),
     ];
 
+    // Undoing a step runs after it, so it can read that step's output too
+    let compensate: CompiledStep['compensate'];
+    const compensationReads = new Set<string>();
+    if (step.compensate) {
+      const { task: undoName, params: undoParams = {}, retry } = step.compensate;
+      if (step.forEach !== undefined) issues.push(`${where} compensate cannot be combined with forEach`);
+      if (retry !== undefined && !validateRetry(structuredClone(retry))) {
+        issues.push(...formatSchemaErrors(validateRetry.errors, 'compensate.retry').map(issue => `${where} ${issue}`));
+      }
+      const undoTask = tasks.get(undoName);
+      if (!undoTask) issues.push(`${where} compensate uses unknown task "${undoName}"`);
+      const undo = compileTemplate(undoParams, 'compensate.params');
+      issues.push(...undo.issues.map(issue => `${where} ${issue}`));
+      if (undoTask && undo.issues.length === 0) {
+        issues.push(...checkParams(undoTask, undoParams, undo.expressions.map(e => e.pointer)).map(issue => `${where} compensate ${issue}`));
+      }
+      located.push(...undo.expressions.map(e => ({ ...e, rootNames: [] as string[] })));
+      undo.expressions.forEach(e => compensationReads.add(e.path));
+      compensate = { task: undoName, params: undo.template };
+    }
+
     for (const { expr, path, rootNames } of located) {
       const refs = findReferences(expr, path, rootNames);
       issues.push(...refs.issues.map(issue => `${where} ${issue}`));
       for (const id of refs.steps) {
         if (!byId.has(id)) issues.push(`${where} ${path} references unknown step "${id}"`);
-        else if (!upstream.has(id)) issues.push(`${where} ${path} references step "${id}", which it does not depend on`);
+        else if (!upstream.has(id) && !(id === step.id && compensationReads.has(path))) {
+          issues.push(`${where} ${path} references step "${id}", which it does not depend on`);
+        }
       }
       for (const name of refs.inputs) {
         if (!declaredInputs.has(name)) issues.push(`${where} ${path} references undeclared input "${name}"`);
       }
     }
 
-    return { step, params: params.template, when: control[0]?.template, forEach: control[1]?.template, upstream };
+    return { step, params: params.template, when: control[0]?.template, forEach: control[1]?.template, upstream, compensate };
   });
 
   if (issues.length > 0) {

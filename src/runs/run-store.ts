@@ -23,6 +23,7 @@ export interface RunStore {
   getRun(runId: string): Promise<RunSummary | null>;
   /** Oldest first, optionally only those after a seq */
   getEvents(runId: string, afterSeq?: number): Promise<RunEvent[]>;
+  /** Every run the scheduler still has work to do on */
   findRunning(): Promise<RunSummary[]>;
 
   /** Adds rows, leaving any that already exist as they are */
@@ -48,6 +49,9 @@ export interface RunStore {
    * does no work, so it does not count.
    */
   countInFlight(): Promise<InFlightCount[]>;
+  /** The outbox: oldest first, at most limit */
+  listUnpublishedEvents(limit: number): Promise<RunEvent[]>;
+  markEventsPublished(events: RunEvent[]): Promise<void>;
   /** Newest first, without outputs */
   listDeadLetters(limit: number): Promise<StepRun[]>;
   /**

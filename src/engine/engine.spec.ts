@@ -774,6 +774,119 @@ describe('parallelism', () => {
   });
 });
 
+describe('compensation', () => {
+  beforeAll(() => {
+    jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    jest.spyOn(console, 'error').mockImplementation(() => undefined);
+  });
+  afterAll(() => jest.restoreAllMocks());
+
+  const undoable = (id: string, deps: string[] = []) => ({
+    ...step(id, 'do', deps, { name: id }),
+    compensate: { task: 'undo', params: { name: id, had: `{{ steps.${id}.output }}` }, retry: { maxAttempts: 2, backoffMs: 1 } },
+  });
+  const actions = () => {
+    const log: string[] = [];
+    return {
+      log,
+      tasks: lookup({
+        do: fakeTask(async ({ params }: TaskContext<{ name: string }>) => {
+          log.push(`do ${params.name}`);
+          return `output of ${params.name}`;
+        }),
+        undo: fakeTask(async ({ params }: TaskContext<{ name: string; had: string }>) => {
+          log.push(`undo ${params.name} (${params.had})`);
+        }),
+        boom: fakeTask(async () => {
+          throw new Error('kaput');
+        }),
+      }),
+    };
+  };
+
+  it('undoes finished steps latest first, each after everything built on it', async () => {
+    const { log, tasks } = actions();
+    const store = new InMemoryRunStore();
+
+    await expect(
+      runWorkflow(workflow([undoable('a'), undoable('b', ['a']), undoable('c', ['b']), step('fail', 'boom', ['c'])]), tasks, { ...quiet, store, runId: 'r', workerSlots: 4 })
+    ).rejects.toMatchObject({ taskId: 'fail' });
+
+    expect(log).toEqual(['do a', 'do b', 'do c', 'undo c (output of c)', 'undo b (output of b)', 'undo a (output of a)']);
+    const run = await store.getRun('r');
+    expect(run).toMatchObject({ status: 'COMPENSATED', failedStepId: 'fail', error: 'Task execution failed: kaput' });
+    expect(run.steps.map(s => s.compensation)).toEqual(['SUCCEEDED', 'SUCCEEDED', 'SUCCEEDED', undefined]);
+    expect(replay(await store.getEvents('r'))).toEqual(run);
+  });
+
+  it('only undoes steps that finished, and that say how', async () => {
+    const { log, tasks } = actions();
+    const store = new InMemoryRunStore();
+
+    await expect(
+      runWorkflow(workflow([undoable('a'), step('plain', 'do', ['a'], { name: 'plain' }), step('fail', 'boom', ['plain']), undoable('never', ['fail'])]), tasks, { ...quiet, store, runId: 'r' })
+    ).rejects.toBeInstanceOf(TaskExecutionError);
+
+    expect(log).toEqual(['do a', 'do plain', 'undo a (output of a)']);
+  });
+
+  it('simply fails when there is nothing to undo', async () => {
+    const { tasks } = actions();
+    const store = new InMemoryRunStore();
+
+    await expect(runWorkflow(workflow([step('fail', 'boom')]), tasks, { ...quiet, store, runId: 'r' })).rejects.toBeInstanceOf(TaskExecutionError);
+
+    expect((await store.getRun('r')).status).toBe('FAILED');
+  });
+
+  it('retries an undo and stops the way back if it cannot, leaving the run for a person', async () => {
+    const log: string[] = [];
+    const tasks = lookup({
+      do: fakeTask(async () => 1),
+      undo: fakeTask(async ({ params }: TaskContext<{ name: string }>) => {
+        log.push(params.name);
+        if (params.name === 'b') throw new Error('stuck');
+      }),
+      boom: fakeTask(async () => {
+        throw new Error('kaput');
+      }),
+    });
+    const store = new InMemoryRunStore();
+
+    await expect(
+      runWorkflow(workflow([undoable('a'), undoable('b', ['a']), step('fail', 'boom', ['b'])]), tasks, { ...quiet, store, runId: 'r' })
+    ).rejects.toBeInstanceOf(TaskExecutionError);
+
+    expect(log).toEqual(['b', 'b']);
+    const run = await store.getRun('r');
+    expect(run).toMatchObject({ status: 'COMPENSATION_FAILED', failedStepId: 'fail' });
+    expect(run.steps.find(s => s.id === 'b')).toMatchObject({ compensation: 'FAILED', compensationError: expect.stringContaining('stuck') });
+    expect(run.steps.find(s => s.id === 'a').compensation).toBeUndefined();
+  });
+
+  it('checks a compensation at submit time', () => {
+    const issues = issuesOf(() =>
+      validateWorkflow(
+        workflow([
+          step('other', 't'),
+          { ...step('a', 't'), compensate: { task: 'missing' } },
+          { ...step('b', 't'), compensate: { task: 't', params: { x: '{{ steps.other.output }}', y: '{{ steps.b.output }}' } } },
+          { ...step('c', 't', [], {}, { forEach: '{{ [1] }}' }), compensate: { task: 't' } },
+          { ...step('d', 't'), compensate: { task: 't', retry: {} as any } },
+        ]),
+        anyTasks
+      )
+    );
+
+    expect(issues).toEqual([
+      'Step "a" compensate uses unknown task "missing"',
+      'Step "b" compensate.params.x references step "other", which it does not depend on',
+      'Step "c" compensate cannot be combined with forEach',
+      "Step \"d\" compensate.retry must have required property 'maxAttempts'",
+    ]);
+  });
+});
+
 describe('fencing', () => {
   it('drops the result of a worker that lost its lease and a newer worker replaced', async () => {
     const { InMemoryStepQueue } = jest.requireActual('./in-memory-step-queue');

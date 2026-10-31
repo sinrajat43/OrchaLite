@@ -8,6 +8,8 @@ export interface StepOutcome {
   error?: string;
   /** Failed attempts that were retried */
   retries?: number;
+  compensation?: string;
+  compensationError?: string;
 }
 
 /** A run as its caller wants to read it: status plus what each step produced */
@@ -20,7 +22,7 @@ export interface RunResult {
   steps: Record<string, StepOutcome>;
 }
 
-const TERMINAL: RunStatus[] = ['SUCCEEDED', 'FAILED', 'ABANDONED'];
+const TERMINAL: RunStatus[] = ['SUCCEEDED', 'FAILED', 'ABANDONED', 'COMPENSATED', 'COMPENSATION_FAILED'];
 
 export const isTerminal = (status: RunStatus): boolean => TERMINAL.includes(status);
 
@@ -40,6 +42,8 @@ export function toRunResult(run: RunSummary, events: RunEvent[], rowOutputs: Rec
     if (step.reason) outcome.reason = step.reason;
     if (step.error) outcome.error = step.error;
     if (step.retries) outcome.retries = step.retries;
+    if (step.compensation) outcome.compensation = step.compensation.toLowerCase();
+    if (step.compensationError) outcome.compensationError = step.compensationError;
     return [step.id, outcome];
   });
   return {
