@@ -17,6 +17,20 @@ export interface WorkflowStep {
   when?: string;
   /** {{ ... }} list; the step runs once per item, and its params can read item and index */
   forEach?: string;
+  /** How often to try a step that fails with a retryable error; once by default */
+  retry?: RetryPolicy;
+  /** Limit for one attempt; a task that outlasts it is aborted and the attempt fails */
+  timeoutMs?: number;
+}
+
+export interface RetryPolicy {
+  /** Tries in total, including the first */
+  maxAttempts: number;
+  /** Wait before the second try; doubles (by multiplier) after each failure. 1000 by default */
+  backoffMs?: number;
+  multiplier?: number;
+  /** The longest wait between tries. 5 minutes by default */
+  maxBackoffMs?: number;
 }
 
 export interface WorkflowDefinition {
@@ -41,6 +55,18 @@ export interface CompiledWorkflow {
   /** Validates run input and fills in defaults */
   validateInput: ValidateFunction;
 }
+
+const validateRetry = validatorFor({
+  type: 'object',
+  properties: {
+    maxAttempts: { type: 'integer', minimum: 1, maximum: 100 },
+    backoffMs: { type: 'integer', minimum: 0 },
+    multiplier: { type: 'number', minimum: 1, maximum: 10 },
+    maxBackoffMs: { type: 'integer', minimum: 0 },
+  },
+  required: ['maxAttempts'],
+  additionalProperties: false,
+} as any);
 
 const INPUT_TYPES = ['string', 'number', 'integer', 'boolean', 'object', 'array'];
 
@@ -187,6 +213,10 @@ export function validateWorkflow(definition: WorkflowDefinition, tasks: TaskLook
 
     if (task && params.issues.length === 0) {
       issues.push(...checkParams(task, step.params ?? {}, params.expressions.map(e => e.pointer)).map(issue => `${where} ${issue}`));
+    }
+
+    if (step.retry !== undefined && !validateRetry(structuredClone(step.retry))) {
+      issues.push(...formatSchemaErrors(validateRetry.errors, 'retry').map(issue => `${where} ${issue}`));
     }
 
     // when and forEach are each a single expression, evaluated once before the step runs

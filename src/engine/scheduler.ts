@@ -10,7 +10,8 @@ import { CompiledRuns } from './compiled-runs';
 import { EngineOptions } from './engine-options';
 import { EngineSignals } from './engine-signals';
 import { StepQueue } from './step-queue';
-import { isFinished, newStepRun, StepRun } from './step-run';
+import { isFailure, isFinished, newStepRun, StepRun } from './step-run';
+import { MAX_ROW_OUTPUT_BYTES } from './worker';
 
 /** forEach items are stored one row each, so keep fan-out bounded */
 export const MAX_FOR_EACH_ITEMS = 1000;
@@ -142,10 +143,14 @@ export class Scheduler {
       if (!row.fanOut || isFinished(row)) continue;
       const own = items.filter(item => item.stepId === row.stepId).sort((a, b) => a.index - b.index);
       if (!own.every(isFinished)) continue;
-      const failed = own.find(item => item.status === 'FAILED');
-      const update: Partial<StepRun> = failed
-        ? { status: 'FAILED', error: failed.error }
-        : { status: 'SUCCEEDED', output: await store.getItemOutputs(row.runId, row.stepId), iterations: own.length };
+      const failed = own.find(isFailure);
+      const output = failed ? undefined : await store.getItemOutputs(row.runId, row.stepId);
+      let update: Partial<StepRun> = failed
+        ? { status: failed.status, error: failed.error }
+        : { status: 'SUCCEEDED', output, iterations: own.length };
+      if (!failed && Buffer.byteLength(JSON.stringify(output) ?? '') > MAX_ROW_OUTPUT_BYTES) {
+        update = { status: 'FAILED', error: `The outputs of the ${own.length} items are too large to store together` };
+      }
       if (await store.updateStepRun(row.id, { status: ['RUNNING'] }, { ...update, endedAt: new Date() })) changed = true;
     }
     return changed;
@@ -154,7 +159,7 @@ export class Scheduler {
   /** Creates the row of every step whose dependencies have all finished */
   private async planSteps(run: RunSummary, steps: Map<string, CompiledStep>, mine: Map<string, StepRun>): Promise<boolean> {
     const { store } = this.deps;
-    const failed = [...mine.values()].some(row => row.status === 'FAILED');
+    const failed = [...mine.values()].some(isFailure);
     const created: StepRun[] = [];
 
     for (const compiled of steps.values()) {
@@ -225,7 +230,7 @@ export class Scheduler {
 
   /** After a failure nothing new starts; what is already running is left to finish */
   private async skipAfterFailure(rows: StepRun[]): Promise<boolean> {
-    if (!rows.some(row => row.status === 'FAILED')) return false;
+    if (!rows.some(isFailure)) return false;
     let changed = false;
     for (const row of rows) {
       if (!['PENDING', 'QUEUED', 'WAITING'].includes(row.status)) continue;
@@ -260,8 +265,9 @@ export class Scheduler {
       if (row.status === 'SUCCEEDED') {
         const output = (await store.getStepOutputs(run.id, [stepId]))[stepId];
         summary = await appendRunEvent(store, run.id, 'StepSucceeded', { stepId, output: capOutput(output), iterations: row.iterations }, at);
-      } else if (row.status === 'FAILED') {
-        summary = await appendRunEvent(store, run.id, 'StepFailed', { stepId, error: row.error }, at);
+      } else if (isFailure(row)) {
+        const deadLettered = row.status === 'DEAD_LETTERED' ? true : undefined;
+        summary = await appendRunEvent(store, run.id, 'StepFailed', { stepId, error: row.error, deadLettered }, at);
       } else {
         summary = await appendRunEvent(store, run.id, 'StepSkipped', { stepId, reason: row.reason }, at);
       }
@@ -295,7 +301,7 @@ export class Scheduler {
     const everyStep = [...steps.keys()].every(id => mine.has(id) && isFinished(mine.get(id)));
     if (!everyStep || !rows.every(isFinished)) return false;
 
-    const failed = [...steps.keys()].map(id => mine.get(id)).find(row => row.status === 'FAILED');
+    const failed = [...steps.keys()].map(id => mine.get(id)).find(isFailure);
     if (failed) await appendRunEvent(store, run.id, 'RunFailed', { failedStepId: failed.stepId, error: failed.error });
     else await appendRunEvent(store, run.id, 'RunSucceeded', {});
     return false;

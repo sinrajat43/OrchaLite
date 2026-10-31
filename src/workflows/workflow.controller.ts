@@ -1,4 +1,4 @@
-import { Controller, Post, Body, HttpCode, Query, Res } from '@nestjs/common';
+import { Controller, Post, Body, Headers, HttpCode, Query, Res } from '@nestjs/common';
 import { Response } from 'express';
 import { AcceptedRun, WorkflowService } from './workflow.service';
 import { RunWorkflowDto } from './dto/workflow.dto';
@@ -13,9 +13,10 @@ export class WorkflowController {
   async runWorkflow(
     @Body() dto: RunWorkflowDto,
     @Query('wait') wait: string | undefined,
-    @Res({ passthrough: true }) response: Response
+    @Res({ passthrough: true }) response: Response,
+    @Headers('idempotency-key') idempotencyKey?: string
   ): Promise<AcceptedRun | RunResult> {
-    const accepted = await this.workflowService.start(dto.definition, dto.input);
+    const accepted = await this.workflowService.start(dto.definition, dto.input, undefined, idempotencyKey);
     return this.workflowService.respond(accepted, wait, response);
   }
 }

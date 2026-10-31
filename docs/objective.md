@@ -257,10 +257,11 @@ decide what a persisted step record has to store.
   - Done when: a test kills a worker mid-step and the run completes on another
     worker.
 
-- [ ] **B3. Failure semantics**
-  - Build: per-step retry policy with exponential backoff and jitter; timeouts
-    through `AbortSignal`; retryable versus terminal errors; a dead-letter
-    state; idempotency keys on the trigger API and on task side effects.
+- [x] **B3. Failure semantics** (done 2026-10-31)
+  - Build: per-step `retry` with exponential backoff and jitter; `timeoutMs`
+    through `AbortSignal`; retryable versus terminal errors; a dead-letter state
+    with `GET /dead-letters`; idempotency keys on the trigger API (the
+    `Idempotency-Key` header) and on task side effects.
   - Teaches: why "exactly once" is at-least-once plus idempotency.
   - Done when: a step that fails twice then succeeds produces its side effect
     exactly once.
@@ -378,3 +379,8 @@ Several of these come back in later horizons, noted on each item.
 | 2026-10-31 | A job holds only the row id | All state stays in one place, so losing or duplicating a job costs nothing and any queue can be swapped in |
 | 2026-10-31 | `delay` throws `SuspendTask`: the job comes back at the wake-up time with `ctx.resumed` set; the cap rises to 90 days | A wait is a timestamp in the database, surviving restarts and holding no worker |
 | 2026-10-31 | The kill test runs compiled workers as real child processes and sends `SIGKILL` | An in-process stand-in cannot prove crash recovery (principle 3) |
+| 2026-10-31 | Any error is retryable unless the task throws `TerminalTaskError`; expressions and invalid params are always terminal, and HTTP 4xx is terminal except 408, 425 and 429 | Retrying is the safe default for unknown failures; what cannot change on a retry should fail at once |
+| 2026-10-31 | A step with no `retry` is tried once; every attempt has a timeout, 5 minutes by default | Retrying a side effect should be a decision in the definition, but a hung task must never hold a slot forever |
+| 2026-10-31 | `DEAD_LETTERED` means a step meant to be retried ran out of attempts, or workers vanished 5 times holding it; a step with no policy that fails is just `FAILED` | Dead letters are the operator's list of work that might have succeeded. A crash does not use up a retry, but it cannot be unlimited: a step that kills its worker would loop forever |
+| 2026-10-31 | A task's own side effects use `ctx.idempotencyKey`: `http.request` (writes) and `notify.webhook` send it as `Idempotency-Key`, and `mongo.insert` derives `_id` from it | Only the receiver can make a repeat harmless, so the engine's job is to hand it a key that never changes across retries and redeliveries |
+| 2026-10-31 | A trigger's idempotency key is claimed through a unique index before the run is recorded, with a fingerprint of the request; reuse for something else is a `409`. Keys do not expire yet | A repeat that finds the key but no run finishes the job, so a crash between the two writes is safe |

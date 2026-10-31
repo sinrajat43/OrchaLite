@@ -1,13 +1,15 @@
-import { BadRequestException, Inject, Injectable, InternalServerErrorException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Inject, Injectable, InternalServerErrorException } from '@nestjs/common';
+import { createHash } from 'crypto';
 import { Response } from 'express';
 import { Types } from 'mongoose';
 import { EngineSignals } from '../engine/engine-signals';
 import { TaskRegistry } from '../orchestrator/task-registry.service';
 import { checkRun, RunInputError, validateWorkflow, WorkflowDefinition, WorkflowDefinitionError } from '../orchestrator/workflow-definition';
+import { IllegalTransitionError } from '../runs/run-projection';
 import { appendRunEvent } from '../runs/run-recorder';
 import { isTerminal, RunResult, toRunResult } from '../runs/run-result';
 import { RUN_STORE, RunStore } from '../runs/run-store';
-import { WorkflowRef } from '../runs/run.types';
+import { RunStatus, WorkflowRef } from '../runs/run.types';
 
 /**
  * Maps engine errors to HTTP errors
@@ -25,7 +27,8 @@ export function toHttpError(error: unknown): unknown {
 /** What accepting a run returns, before any step has run */
 export interface AcceptedRun {
   runId: string;
-  status: 'RUNNING';
+  /** RUNNING, unless a repeated request found a run that has already ended */
+  status: RunStatus;
   workflow?: WorkflowRef;
 }
 
@@ -58,9 +61,11 @@ export class WorkflowService {
    * Accepts a run: checks it and records that it started. That record is the
    * only thing the scheduler needs, so the run survives this process.
    * @param workflow - The stored version the definition came from, if any
+   * @param idempotencyKey - A repeat of the same request with this key returns the first run instead of starting another
    * @throws BadRequestException if the definition or input is invalid; nothing is recorded
+   * @throws ConflictException if the key was already used for a different request
    */
-  async start(definition: WorkflowDefinition, runInput?: Record<string, unknown>, workflow?: WorkflowRef): Promise<AcceptedRun> {
+  async start(definition: WorkflowDefinition, runInput?: Record<string, unknown>, workflow?: WorkflowRef, idempotencyKey?: string): Promise<AcceptedRun> {
     let input: Record<string, unknown>;
     try {
       input = checkRun(definition, this.tasks, runInput);
@@ -68,8 +73,25 @@ export class WorkflowService {
       throw toHttpError(error);
     }
 
-    const runId = new Types.ObjectId().toHexString();
-    await appendRunEvent(this.runs, runId, 'RunStarted', { definition: plain(definition), input, workflow, execution: 'queue' });
+    let runId = new Types.ObjectId().toHexString();
+    if (idempotencyKey) {
+      const fingerprint = createHash('sha256').update(JSON.stringify({ definition, input, workflow })).digest('hex');
+      const holder = await this.runs.claimRunRequest({ key: idempotencyKey, fingerprint, runId });
+      if (holder.fingerprint !== fingerprint) {
+        throw new ConflictException(`Idempotency key "${idempotencyKey}" was already used for a different request`);
+      }
+      // A repeat falls through in case the first request died between claiming the key and recording the run
+      runId = holder.runId;
+      const existing = await this.runs.getRun(runId);
+      if (existing) return { runId, status: existing.status, ...(workflow ? { workflow } : {}) };
+    }
+
+    try {
+      await appendRunEvent(this.runs, runId, 'RunStarted', { definition: plain(definition), input, workflow, execution: 'queue' });
+    } catch (error) {
+      // A concurrent repeat of this request got there first, which is the same run
+      if (!idempotencyKey || !(error instanceof IllegalTransitionError)) throw error;
+    }
     this.signals.runChanged(runId);
     return { runId, status: 'RUNNING', ...(workflow ? { workflow } : {}) };
   }

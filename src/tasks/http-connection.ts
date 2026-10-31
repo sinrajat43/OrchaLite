@@ -49,6 +49,13 @@ export async function resolveTarget(
   };
 }
 
+/**
+ * Whether a response status means trying again cannot help: a client error,
+ * apart from the ones that ask the caller to come back later
+ */
+export const isTerminalStatus = (status: number): boolean =>
+  status >= 400 && status < 500 && ![408, 425, 429].includes(status);
+
 /** Submit-time check shared by tasks that take url or connection */
 export function requireUrlOrConnection(params: Record<string, unknown>): string[] {
   return params.url === undefined && params.connection === undefined

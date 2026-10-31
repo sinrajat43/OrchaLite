@@ -4,7 +4,7 @@ import { MongoStepQueue } from '../engine/mongo-step-queue';
 import { STEP_QUEUE, StepQueue } from '../engine/step-queue';
 import { MongoRunStore } from './mongo-run-store';
 import { RUN_STORE, RunStore } from './run-store';
-import { RunsController } from './runs.controller';
+import { DeadLettersController, RunsController } from './runs.controller';
 
 @Module({})
 export class RunsModule {
@@ -16,7 +16,7 @@ export class RunsModule {
     return {
       module: RunsModule,
       global: true,
-      controllers: [RunsController],
+      controllers: [RunsController, DeadLettersController],
       providers: [{ provide: RUN_STORE, useValue: store }, { provide: STEP_QUEUE, useValue: queue }],
       exports: [RUN_STORE, STEP_QUEUE],
     };

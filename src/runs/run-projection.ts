@@ -35,6 +35,7 @@ const msBetween = (from: Date | undefined, to: Date): number | undefined =>
  */
 export function applyEvent(summary: RunSummary | null, event: RunEvent): RunSummary {
   if (event.type === 'RunStarted') {
+    if (summary) throw new IllegalTransitionError(event, summary.status);
     const { definition, input, workflow, execution } = event.data;
     return {
       id: event.runId,
@@ -69,6 +70,13 @@ export function applyEvent(summary: RunSummary | null, event: RunEvent): RunSumm
     return found;
   };
 
+  // Only informs: a retry can be reported before or after the step's other events
+  if (event.type === 'StepRetryScheduled') {
+    const retried = next.steps.find(s => s.id === event.data.stepId);
+    if (retried) retried.retries = (retried.retries ?? 0) + 1;
+    return next;
+  }
+
   switch (event.type) {
     case 'StepStarted':
       Object.assign(step(), { status: 'RUNNING', startedAt: event.at });
@@ -82,7 +90,7 @@ export function applyEvent(summary: RunSummary | null, event: RunEvent): RunSumm
     case 'StepFailed': {
       const s = step();
       Object.assign(s, {
-        status: 'FAILED',
+        status: event.data.deadLettered ? 'DEAD_LETTERED' : 'FAILED',
         endedAt: event.at,
         durationMs: msBetween(s.startedAt, event.at),
         error: event.data.error,

@@ -1,8 +1,8 @@
 import axios from 'axios';
 import { Static, Type } from '@sinclair/typebox';
-import { Task, TaskContext } from './task.interface';
+import { Task, TaskContext, TerminalTaskError } from './task.interface';
 import { TaskHandler } from './task-handler.decorator';
-import { ConnectionParam, requireUrlOrConnection, resolveTarget } from './http-connection';
+import { ConnectionParam, isTerminalStatus, requireUrlOrConnection, resolveTarget } from './http-connection';
 
 const NotifyWebhookParamsSchema = Type.Object(
   {
@@ -35,11 +35,18 @@ export class NotifyWebhookTask implements Task<NotifyWebhookParams, NotifyWebhoo
     const shown = params.connection ? `connection "${params.connection}"` : params.url;
     const { url, headers, query } = await resolveTarget(ctx, params.connection, params);
     try {
-      const response = await axios.post(url, payload ?? null, { headers, params: query, timeout: timeoutMs, signal });
+      const response = await axios.post(url, payload ?? null, {
+        // A step can run more than once; this lets the receiver recognise a repeat
+        headers: { 'Idempotency-Key': ctx.idempotencyKey, ...headers },
+        params: query,
+        timeout: timeoutMs,
+        signal,
+      });
       return { status: response.status };
     } catch (error) {
-      const status = axios.isAxiosError(error) && error.response ? `HTTP ${error.response.status}` : (error as Error).message;
-      throw new Error(`Webhook ${shown} failed: ${status}`);
+      const response = axios.isAxiosError(error) ? error.response : undefined;
+      const message = `Webhook ${shown} failed: ${response ? `HTTP ${response.status}` : (error as Error).message}`;
+      throw response && isTerminalStatus(response.status) ? new TerminalTaskError(message) : new Error(message);
     }
   }
 }

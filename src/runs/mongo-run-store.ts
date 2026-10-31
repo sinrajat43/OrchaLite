@@ -1,6 +1,6 @@
 import { Schema, model, models, Model } from 'mongoose';
 import { StepRun, StepRunExpectation, StepRunUpdateOptions } from '../engine/step-run';
-import { DuplicateEventError, RunStore } from './run-store';
+import { DuplicateEventError, RunRequest, RunStore } from './run-store';
 import { RunEvent, RunQuery, RunSummary } from './run.types';
 
 const RunEventSchema = new Schema(
@@ -27,6 +27,7 @@ const StepSummarySchema = new Schema(
     error: String,
     reason: String,
     iterations: Number,
+    retries: Number,
   },
   { _id: false }
 );
@@ -70,7 +71,9 @@ const StepRunSchema = new Schema(
     error: String,
     reason: String,
     iterations: Number,
-    resumeAt: Date,
+    notBefore: Date,
+    resumed: Boolean,
+    failures: [{ _id: false, attempt: Number, error: String, at: Date }],
     startedAt: Date,
     endedAt: Date,
   },
@@ -78,11 +81,20 @@ const StepRunSchema = new Schema(
   { versionKey: false, minimize: false }
 );
 StepRunSchema.index({ runId: 1, stepId: 1, index: 1 });
+StepRunSchema.index({ status: 1, _id: -1 });
+
+// A key claims a run id once, through the unique _id; there is no expiry yet
+const RunRequestSchema = new Schema(
+  { _id: { type: String }, fingerprint: String, runId: String, at: Date },
+  { versionKey: false }
+);
 
 const RunEventModel: Model<any> = models.RunEvent ?? model('RunEvent', RunEventSchema, 'run_events');
 const RunSummaryModel: Model<any> = models.RunSummary ?? model('RunSummary', RunSummarySchema, 'workflow_runs');
 
 const StepRunModel: Model<any> = models.StepRun ?? model('StepRun', StepRunSchema, 'step_runs');
+
+const RunRequestModel: Model<any> = models.RunRequest ?? model('RunRequest', RunRequestSchema, 'run_requests');
 
 const toRow = ({ _id, ...row }: any): StepRun => ({ id: _id, ...row });
 const toEvent = ({ _id, ...event }: any): RunEvent => event;
@@ -177,5 +189,21 @@ export class MongoRunStore implements RunStore {
     const inc = { version: 1, ...(options.takeFence ? { fence: 1 } : {}) };
     const row: any = await StepRunModel.findOneAndUpdate(filter, { $set: changes, $inc: inc }, { new: true, lean: true });
     return row ? toRow(row) : null;
+  }
+
+  async listDeadLetters(limit: number): Promise<StepRun[]> {
+    const rows = await StepRunModel.find({ status: 'DEAD_LETTERED' }, { output: 0 }).sort({ _id: -1 }).limit(limit).lean();
+    return rows.map(toRow);
+  }
+
+  async claimRunRequest(request: RunRequest): Promise<RunRequest> {
+    try {
+      await RunRequestModel.create({ _id: request.key, fingerprint: request.fingerprint, runId: request.runId, at: new Date() });
+      return request;
+    } catch (error) {
+      if ((error as any)?.code !== 11000) throw error;
+      const { _id, fingerprint, runId }: any = await RunRequestModel.findById(request.key).lean();
+      return { key: _id, fingerprint, runId };
+    }
   }
 }

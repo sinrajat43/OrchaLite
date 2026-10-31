@@ -1,10 +1,11 @@
 import axios from 'axios';
 import { Static, Type } from '@sinclair/typebox';
-import { Task, TaskContext } from './task.interface';
+import { Task, TaskContext, TerminalTaskError } from './task.interface';
 import { TaskHandler } from './task-handler.decorator';
-import { ConnectionParam, requireUrlOrConnection, resolveTarget } from './http-connection';
+import { ConnectionParam, isTerminalStatus, requireUrlOrConnection, resolveTarget } from './http-connection';
 
 const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD'] as const;
+const READ_METHODS: string[] = ['GET', 'HEAD'];
 
 const HttpRequestParamsSchema = Type.Object(
   {
@@ -68,7 +69,8 @@ export class HttpRequestTask implements Task<HttpRequestParams, HttpResponse> {
         method,
         url,
         params: query,
-        headers,
+        // A step can run more than once; this lets the server recognise a repeat of a write
+        headers: READ_METHODS.includes(method) ? headers : { 'Idempotency-Key': ctx.idempotencyKey, ...headers },
         data: body,
         timeout: timeoutMs,
         signal,
@@ -91,7 +93,7 @@ export class HttpRequestTask implements Task<HttpRequestParams, HttpResponse> {
     };
     if (!result.ok) {
       result.error = `${method} ${shown} returned HTTP ${response.status}: ${snippet(response.data)}`;
-      if (throwOnError) throw new Error(result.error);
+      if (throwOnError) throw isTerminalStatus(response.status) ? new TerminalTaskError(result.error) : new Error(result.error);
     }
     return result;
   }

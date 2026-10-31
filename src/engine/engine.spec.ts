@@ -2,7 +2,8 @@ import { MAX_FOR_EACH_ITEMS } from './scheduler';
 import { RunInputError, validateWorkflow, WorkflowDefinition, WorkflowDefinitionError, WorkflowStep } from '../orchestrator/workflow-definition';
 import { InMemoryRunStore } from '../runs/in-memory-run-store';
 import { runWorkflow } from '../testing/run-workflow';
-import { Task, TaskContext, TaskExecutionError } from '../tasks/task.interface';
+import { Task, TaskContext, TaskExecutionError, TerminalTaskError } from '../tasks/task.interface';
+import { replay } from '../runs/run-projection';
 import { Type } from '@sinclair/typebox';
 import { connectionsOf, fakeTask, silentLogger } from '../testing/task-context';
 
@@ -485,6 +486,158 @@ describe('runWorkflow', () => {
   });
 });
 
+describe('failure semantics', () => {
+  beforeAll(() => {
+    jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    jest.spyOn(console, 'error').mockImplementation(() => undefined);
+  });
+  afterAll(() => jest.restoreAllMocks());
+
+  const fast = { maxAttempts: 3, backoffMs: 1, maxBackoffMs: 2 };
+  const failing = (times: number, error: () => Error = () => new Error('flaky')) => {
+    const attempts: number[] = [];
+    const keys: string[] = [];
+    const task = fakeTask(async ({ attempt, idempotencyKey }) => {
+      attempts.push(attempt);
+      keys.push(idempotencyKey);
+      if (attempts.length <= times) throw error();
+      return 'done';
+    });
+    return { task, attempts, keys };
+  };
+
+  it('retries a retryable failure with a stable idempotency key, counting attempts', async () => {
+    const { task, attempts, keys } = failing(2);
+    const store = new InMemoryRunStore();
+
+    const results = await runWorkflow(workflow([step('a', 't')].map(s => ({ ...s, retry: fast }))), lookup({ t: task }), { ...quiet, runId: 'r', store });
+
+    expect(results.steps.a).toEqual({ status: 'succeeded', output: 'done', retries: 2 });
+    expect(attempts).toEqual([1, 2, 3]);
+    expect(new Set(keys)).toEqual(new Set(['r:a']));
+    const retries = (await store.getEvents('r')).filter(e => e.type === 'StepRetryScheduled');
+    expect(retries.map(e => [e.data.attempt, e.data.error])).toEqual([[1, 'Task execution failed: flaky'], [2, 'Task execution failed: flaky']]);
+  });
+
+  it('does not retry without a policy', async () => {
+    const { task, attempts } = failing(5);
+    const store = new InMemoryRunStore();
+    await expect(runWorkflow(workflow([step('a', 't')]), lookup({ t: task }), { ...quiet, runId: 'r', store })).rejects.toBeInstanceOf(TaskExecutionError);
+    expect(attempts).toEqual([1]);
+    expect((await store.getRun('r')).steps[0].status).toBe('FAILED');
+  });
+
+  it('does not retry a terminal error', async () => {
+    const { task, attempts } = failing(5, () => new TerminalTaskError('rejected'));
+    const store = new InMemoryRunStore();
+    await expect(
+      runWorkflow(workflow([{ ...step('a', 't'), retry: fast }]), lookup({ t: task }), { ...quiet, runId: 'r', store })
+    ).rejects.toMatchObject({ message: 'Task execution failed: rejected' });
+    expect(attempts).toEqual([1]);
+    expect((await store.getRun('r')).steps[0].status).toBe('FAILED');
+  });
+
+  it('does not retry params that cannot resolve', async () => {
+    const store = new InMemoryRunStore();
+    await expect(
+      runWorkflow(workflow([{ ...step('a', 't', [], { x: '{{ $error("nope") }}' }), retry: fast }]), anyTasks, { ...quiet, runId: 'r', store })
+    ).rejects.toBeInstanceOf(TaskExecutionError);
+    expect((await store.getStepRun('r:a')).failures).toBeUndefined();
+  });
+
+  it('dead-letters a step that runs out of attempts', async () => {
+    const { task, attempts } = failing(99);
+    const store = new InMemoryRunStore();
+
+    await expect(
+      runWorkflow(workflow([{ ...step('a', 't'), retry: fast }, step('b', 't', ['a'])]), lookup({ t: task }), { ...quiet, runId: 'r', store })
+    ).rejects.toMatchObject({ taskId: 'a', message: 'Gave up after 3 attempts: Task execution failed: flaky' });
+
+    expect(attempts).toEqual([1, 2, 3]);
+    const run = await store.getRun('r');
+    expect(run).toMatchObject({ status: 'FAILED', failedStepId: 'a', steps: [{ id: 'a', status: 'DEAD_LETTERED', retries: 2 }, { id: 'b', status: 'SKIPPED' }] });
+    expect(await store.listDeadLetters(5)).toMatchObject([{ id: 'r:a', status: 'DEAD_LETTERED', failures: [{ attempt: 1 }, { attempt: 2 }] }]);
+    expect(replay(await store.getEvents('r'))).toEqual(run);
+  });
+
+  it('retries one forEach item without repeating the others', async () => {
+    const calls: number[] = [];
+    let failed = false;
+    const task = fakeTask(async ({ params }: TaskContext<{ v: number }>) => {
+      calls.push(params.v);
+      if (params.v === 2 && !failed) {
+        failed = true;
+        throw new Error('once');
+      }
+      return params.v;
+    });
+
+    const results = await runWorkflow(
+      workflow([{ ...step('a', 't', [], { v: '{{ item }}' }, { forEach: '{{ [1, 2, 3] }}' }), retry: fast }]),
+      lookup({ t: task }),
+      quiet
+    );
+
+    expect(results.steps.a).toMatchObject({ output: [1, 2, 3], iterations: 3 });
+    expect(calls).toEqual([1, 2, 2, 3]);
+  });
+
+  it('times out a task that ignores its signal, aborting the signal and freeing the slot', async () => {
+    let signal: AbortSignal;
+    const never = fakeTask(({ signal: s }) => {
+      signal = s;
+      return new Promise(() => undefined);
+    });
+
+    await expect(
+      runWorkflow(workflow([{ ...step('a', 't'), timeoutMs: 30 }]), lookup({ t: never }), quiet)
+    ).rejects.toMatchObject({ message: 'Task execution failed: Timed out after 30 ms' });
+    expect(signal.aborted).toBe(true);
+  });
+
+  it('retries after a timeout', async () => {
+    let calls = 0;
+    const slowThenFast = fakeTask(async () => (++calls === 1 ? new Promise(() => undefined) : 'ok'));
+
+    const results = await runWorkflow(workflow([{ ...step('a', 't'), timeoutMs: 30, retry: fast }]), lookup({ t: slowThenFast }), quiet);
+
+    expect(results.steps.a).toMatchObject({ output: 'ok', retries: 1 });
+  });
+
+  it('rejects a bad retry policy at submit time', () => {
+    expect(issuesOf(() => validateWorkflow(workflow([{ ...step('a', 't'), retry: { backoffMs: 5 } as any }]), anyTasks))).toEqual([
+      "Step \"a\" retry must have required property 'maxAttempts'",
+    ]);
+  });
+
+  it('computes exponential backoff, capped, with half of it random', () => {
+    const { backoffMs } = jest.requireActual('./worker');
+    const policy = { maxAttempts: 9, backoffMs: 100, multiplier: 2, maxBackoffMs: 500 };
+    expect([1, 2, 3, 4].map(n => backoffMs(policy, n, () => 1))).toEqual([100, 200, 400, 500]);
+    expect([1, 2, 3, 4].map(n => backoffMs(policy, n, () => 0))).toEqual([50, 100, 200, 250]);
+  });
+
+  it('dead-letters a step whose workers keep vanishing', async () => {
+    const { InMemoryStepQueue } = jest.requireActual('./in-memory-step-queue');
+    const { EngineSignals } = jest.requireActual('./engine-signals');
+    const { Worker } = jest.requireActual('./worker');
+    const store = new InMemoryRunStore();
+    const queue = new InMemoryStepQueue();
+    const execute = jest.fn(async () => 1);
+    await store.insertStepRuns([{ id: 'r:a', runId: 'r', stepId: 'a', task: 't', status: 'RUNNING', version: 1, fence: 5 }]);
+    await queue.enqueue({ id: 'r:a', runId: 'r' });
+
+    const worker = new Worker({ store, queue, tasks: lookup({ t: fakeTask(execute) }), signals: new EngineSignals(), connections: null, createLogger: () => silentLogger, options: { leaseMs: 1000, workerSlots: 1, workerPollMs: 2, defaultStepTimeoutMs: 1000, maxLostDeliveries: 5 } });
+    worker.start();
+    while ((await store.getStepRun('r:a')).status === 'RUNNING') await new Promise(resolve => setTimeout(resolve, 2));
+    await worker.stop();
+
+    expect(await store.getStepRun('r:a')).toMatchObject({ status: 'DEAD_LETTERED', error: expect.stringContaining('5 deliveries') });
+    expect(execute).not.toHaveBeenCalled();
+    expect(await queue.claim('w', 1000)).toBeNull();
+  });
+});
+
 describe('fencing', () => {
   it('drops the result of a worker that lost its lease and a newer worker replaced', async () => {
     const { InMemoryStepQueue } = jest.requireActual('./in-memory-step-queue');
@@ -515,7 +668,7 @@ describe('fencing', () => {
     await queue.enqueue({ id: 'r:a', runId: 'r' });
 
     const worker = (leaseMs: number) =>
-      new Worker({ store, queue, tasks, signals: new EngineSignals(), connections: { get: async () => null }, createLogger: () => silentLogger, options: { leaseMs, workerSlots: 1, workerPollMs: 2 } });
+      new Worker({ store, queue, tasks, signals: new EngineSignals(), connections: { get: async () => null }, createLogger: () => silentLogger, options: { leaseMs, workerSlots: 1, workerPollMs: 2, defaultStepTimeoutMs: 30_000, maxLostDeliveries: 5 } });
 
     jest.spyOn(jest.requireActual('@nestjs/common').Logger.prototype, 'warn').mockImplementation(() => undefined);
     // A heartbeat that cannot keep up: the lease runs out mid-task

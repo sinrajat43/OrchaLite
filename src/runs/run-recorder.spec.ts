@@ -40,7 +40,7 @@ describe('appendRunEvent', () => {
     const store = new InMemoryRunStore();
     await appendRunEvent(store, 'r', 'RunStarted', started);
 
-    await Promise.all(Array.from({ length: 5 }, (_, i) => appendRunEvent(store, 'r', 'StepRetryNoted' as any, { i })));
+    await Promise.all(Array.from({ length: 5 }, (_, i) => appendRunEvent(store, 'r', 'StepRetryScheduled', { stepId: 'a', i })));
 
     expect((await store.getEvents('r')).map(e => e.seq)).toEqual([1, 2, 3, 4, 5, 6]);
     expect((await store.getRun('r'))!.lastSeq).toBeGreaterThan(1);

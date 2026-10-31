@@ -1,5 +1,5 @@
 import { StepRun, StepRunExpectation, StepRunUpdateOptions } from '../engine/step-run';
-import { DuplicateEventError, RunStore } from './run-store';
+import { DuplicateEventError, RunRequest, RunStore } from './run-store';
 import { RunEvent, RunQuery, RunSummary } from './run.types';
 
 /**
@@ -10,6 +10,7 @@ export class InMemoryRunStore implements RunStore {
   private readonly events: RunEvent[] = [];
   private readonly runs = new Map<string, RunSummary>();
   private readonly stepRuns = new Map<string, StepRun>();
+  private readonly requests = new Map<string, RunRequest>();
 
   async appendEvent(event: RunEvent): Promise<void> {
     if (this.events.some(e => e.runId === event.runId && e.seq === event.seq)) {
@@ -82,6 +83,19 @@ export class InMemoryRunStore implements RunStore {
     if (expected.fence !== undefined && expected.fence !== row.fence) return null;
     Object.assign(row, structuredClone(changes), { version: row.version + 1, fence: row.fence + (options.takeFence ? 1 : 0) });
     return structuredClone(row);
+  }
+
+  async listDeadLetters(limit: number): Promise<StepRun[]> {
+    return [...this.stepRuns.values()]
+      .filter(row => row.status === 'DEAD_LETTERED')
+      .slice(-limit)
+      .reverse()
+      .map(({ output, ...row }) => structuredClone(row));
+  }
+
+  async claimRunRequest(request: RunRequest): Promise<RunRequest> {
+    if (!this.requests.has(request.key)) this.requests.set(request.key, { ...request });
+    return { ...this.requests.get(request.key) };
   }
 
   private rowsOf(runId: string): StepRun[] {

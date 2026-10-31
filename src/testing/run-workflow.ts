@@ -19,6 +19,7 @@ export interface RunOptions {
   /** Pass one to look at the run's history afterwards */
   store?: InMemoryRunStore;
   workerSlots?: number;
+  leaseMs?: number;
 }
 
 const noConnections: ConnectionLookup = {
@@ -48,7 +49,7 @@ export async function runWorkflow(definition: WorkflowDefinition, tasks: TaskLoo
     signals,
     connections: options.connections ?? noConnections,
     createLogger: options.createLogger ?? (() => silentLogger),
-    options: { leaseMs: 5000, workerSlots: options.workerSlots ?? 1, workerPollMs: 2 },
+    options: { leaseMs: options.leaseMs ?? 5000, workerSlots: options.workerSlots ?? 1, workerPollMs: 2, defaultStepTimeoutMs: 30_000, maxLostDeliveries: 5 },
   });
   scheduler.start();
   worker.start();

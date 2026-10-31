@@ -11,6 +11,10 @@ export interface EngineOptions {
   leaseMs: number;
   /** Steps one worker process runs at a time */
   workerSlots: number;
+  /** Limit for one attempt of a step with no timeoutMs of its own */
+  defaultStepTimeoutMs: number;
+  /** How many times workers may die holding one step before it is dead-lettered */
+  maxLostDeliveries: number;
   /** How often a worker looks for work when idle */
   workerPollMs: number;
   /** How often the scheduler looks over all active runs */
@@ -30,6 +34,8 @@ export function engineOptionsFromEnv(env: NodeJS.ProcessEnv = process.env): Engi
     roles: roles as EngineRole[],
     leaseMs: positive(env.ORCHALITE_LEASE_MS, 30_000),
     workerSlots: positive(env.ORCHALITE_WORKER_SLOTS, 1),
+    defaultStepTimeoutMs: positive(env.ORCHALITE_STEP_TIMEOUT_MS, 5 * 60_000),
+    maxLostDeliveries: positive(env.ORCHALITE_MAX_LOST_DELIVERIES, 5),
     workerPollMs: positive(env.ORCHALITE_WORKER_POLL_MS, 250),
     schedulerIntervalMs: positive(env.ORCHALITE_SCHEDULER_INTERVAL_MS, 500),
   };

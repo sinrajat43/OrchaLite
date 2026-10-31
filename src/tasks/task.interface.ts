@@ -25,11 +25,11 @@ export interface ConnectionLookup {
 export interface TaskContext<TParams = unknown> {
   /** Params from the step definition, with every {{ ... }} expression resolved */
   params: TParams;
-  /** Aborted on timeout or cancellation */
+  /** Aborted on timeout, or when the worker loses its lease on this step */
   signal: AbortSignal;
   /** 1-based attempt number */
   attempt: number;
-  /** Stable per run + step, so a retried side effect can be deduplicated */
+  /** Stable per run + step (+ forEach item) across retries and redeliveries, so a repeated side effect can be deduplicated */
   idempotencyKey: string;
   /** Tagged with the run id and step id */
   logger: TaskLogger;
@@ -65,6 +65,17 @@ export interface Task<TParams = any, TOutput = any> {
    * @throws Error if the task fails; the engine wraps it in TaskExecutionError
    */
   execute(ctx: TaskContext<TParams>): Promise<TOutput>;
+}
+
+/**
+ * Thrown by a task for a failure that trying again cannot fix, such as a
+ * rejected request. Any other error is retried if the step has a retry policy.
+ */
+export class TerminalTaskError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TerminalTaskError';
+  }
 }
 
 /**

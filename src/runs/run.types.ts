@@ -1,11 +1,12 @@
 export const RUN_STATUSES = ['RUNNING', 'SUCCEEDED', 'FAILED', 'ABANDONED'] as const;
 export type RunStatus = typeof RUN_STATUSES[number];
 
-export type StepStatus = 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'SKIPPED';
+export type StepStatus = 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'DEAD_LETTERED' | 'SKIPPED';
 
 export type RunEventType =
   | 'RunStarted'
   | 'StepStarted'
+  | 'StepRetryScheduled'
   | 'StepSucceeded'
   | 'StepFailed'
   | 'StepSkipped'
@@ -38,6 +39,8 @@ export interface StepSummary {
   reason?: string;
   /** forEach steps: how many items ran */
   iterations?: number;
+  /** Failed attempts that were retried, across all items */
+  retries?: number;
 }
 
 /** The stored workflow version a run came from */

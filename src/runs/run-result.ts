@@ -1,11 +1,13 @@
 import { RunEvent, RunStatus, RunSummary, WorkflowRef } from './run.types';
 
 export interface StepOutcome {
-  status: 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped';
+  status: 'pending' | 'running' | 'succeeded' | 'failed' | 'dead_lettered' | 'skipped';
   output?: unknown;
   iterations?: number;
   reason?: string;
   error?: string;
+  /** Failed attempts that were retried */
+  retries?: number;
 }
 
 /** A run as its caller wants to read it: status plus what each step produced */
@@ -37,6 +39,7 @@ export function toRunResult(run: RunSummary, events: RunEvent[], rowOutputs: Rec
     if (step.iterations !== undefined) outcome.iterations = step.iterations;
     if (step.reason) outcome.reason = step.reason;
     if (step.error) outcome.error = step.error;
+    if (step.retries) outcome.retries = step.retries;
     return [step.id, outcome];
   });
   return {

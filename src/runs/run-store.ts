@@ -40,6 +40,21 @@ export interface RunStore {
    * @returns the updated row, or null if the expectation failed and nothing changed
    */
   updateStepRun(id: string, expected: StepRunExpectation, changes: Partial<StepRun>, options?: StepRunUpdateOptions): Promise<StepRun | null>;
+  /** Newest first, without outputs */
+  listDeadLetters(limit: number): Promise<StepRun[]>;
+  /**
+   * Claims an idempotency key for a run, atomically
+   * @returns the request now holding the key: this one, or an earlier one to reuse
+   */
+  claimRunRequest(request: RunRequest): Promise<RunRequest>;
+}
+
+/** Ties an idempotency key to the run it started */
+export interface RunRequest {
+  key: string;
+  /** Identifies what was asked for, so a key reused for something else can be refused */
+  fingerprint: string;
+  runId: string;
 }
 
 export class DuplicateEventError extends Error {

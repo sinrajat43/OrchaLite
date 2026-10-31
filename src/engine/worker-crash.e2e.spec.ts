@@ -2,16 +2,7 @@ import { ServerResponse } from 'http';
 import { startTestApi, TestApi } from '../testing/api-app';
 import { buildEngine, EngineProcess, startEngineProcess } from '../testing/engine-process';
 import { sendJson, startTestServer, TestServer } from '../testing/http-server';
-
-const until = async <T>(read: () => Promise<T>, done: (value: T) => boolean, what: string, timeoutMs = 30_000): Promise<T> => {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const value = await read();
-    if (done(value)) return value;
-    if (Date.now() > deadline) throw new Error(`Timed out waiting for ${what}: ${JSON.stringify(value)}`);
-    await new Promise(resolve => setTimeout(resolve, 25));
-  }
-};
+import { until } from '../testing/wait';
 
 // Real processes and a real SIGKILL: the worker gets no chance to clean up
 describe('worker crash', () => {

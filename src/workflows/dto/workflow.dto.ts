@@ -1,5 +1,6 @@
 import { IsString, IsArray, IsOptional, ValidateNested, ArrayMinSize, IsNotEmpty, IsObject, IsDefined, Matches, IsInt, Min } from 'class-validator';
 import { Type } from 'class-transformer';
+import { RetryPolicy } from '../../orchestrator/workflow-definition';
 
 export class WorkflowStepDto {
   @IsString()
@@ -26,6 +27,16 @@ export class WorkflowStepDto {
   @IsOptional()
   @IsString()
   forEach?: string;
+
+  /** Checked in full with the rest of the definition */
+  @IsOptional()
+  @IsObject()
+  retry?: RetryPolicy;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  timeoutMs?: number;
 }
 
 export const WORKFLOW_NAME = /^[A-Za-z0-9_.-]+$/;

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, NotFoundException, Param, ParseIntPipe, Post, Query, Res } from '@nestjs/common';
+import { Body, Controller, Get, Headers, HttpCode, NotFoundException, Param, ParseIntPipe, Post, Query, Res } from '@nestjs/common';
 import { Response } from 'express';
 import { RunResult } from '../runs/run-result';
 import { RunStoredWorkflowDto, WorkflowDefinitionDto } from '../workflows/dto/workflow.dto';
@@ -52,10 +52,11 @@ export class DefinitionsController {
     @Param('name') name: string,
     @Body() { input, version }: RunStoredWorkflowDto,
     @Query('wait') wait: string | undefined,
-    @Res({ passthrough: true }) response: Response
+    @Res({ passthrough: true }) response: Response,
+    @Headers('idempotency-key') idempotencyKey?: string
   ): Promise<AcceptedRun | RunResult> {
     const stored = await this.find(name, version);
-    const accepted = await this.workflows.start(stored.definition, input, { name, version: stored.version });
+    const accepted = await this.workflows.start(stored.definition, input, { name, version: stored.version }, idempotencyKey);
     return this.workflows.respond(accepted, wait, response);
   }
 

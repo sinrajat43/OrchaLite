@@ -26,7 +26,7 @@ export class MongoInsertTask implements Task<MongoInsertParams, MongoInsertOutpu
   readonly paramsSchema = MongoInsertParamsSchema;
   readonly outputSchema = MongoInsertOutputSchema;
 
-  async execute({ params, logger }: TaskContext<MongoInsertParams>): Promise<MongoInsertOutput> {
+  async execute({ params, logger, idempotencyKey }: TaskContext<MongoInsertParams>): Promise<MongoInsertOutput> {
     const { db } = mongoose.connection;
     if (!db) throw new Error('MongoDB is not connected');
 
@@ -35,8 +35,24 @@ export class MongoInsertTask implements Task<MongoInsertParams, MongoInsertOutpu
       .concat(params.documents as Record<string, unknown>[])
       .map(document => (params.timestampField ? { ...document, [params.timestampField]: now } : { ...document }));
 
-    const result = await db.collection(params.collection).insertMany(documents);
-    logger.log(`Inserted ${result.insertedCount} documents into ${params.collection}`);
-    return { insertedCount: result.insertedCount };
+    // An id derived from the step means a repeat of this step cannot insert the document again
+    const generated = new Set<number>();
+    const keyed = documents.map((document, index) => {
+      if ('_id' in document) return document;
+      generated.add(index);
+      return { ...document, _id: `${idempotencyKey}:${index}` };
+    }) as any[];
+
+    try {
+      const result = await db.collection(params.collection).insertMany(keyed, { ordered: false });
+      logger.log(`Inserted ${result.insertedCount} documents into ${params.collection}`);
+    } catch (error) {
+      // Documents an earlier try inserted are fine; anything else is a real failure
+      const failures = [].concat((error as any)?.writeErrors ?? []);
+      const onlyRepeats = (error as any)?.code === 11000 && failures.every(f => f.code === 11000 && generated.has(f.index));
+      if (!onlyRepeats) throw error;
+      logger.log(`Found ${failures.length} of ${documents.length} documents already inserted into ${params.collection} by an earlier try`);
+    }
+    return { insertedCount: documents.length };
   }
 }

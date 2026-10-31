@@ -4,17 +4,28 @@
  * on them.
  *
  *   PENDING -> QUEUED -> RUNNING -> SUCCEEDED | FAILED
- *                           ^  |
- *                           |  v
+ *                           ^  |  \\
+ *                           |  v   DEAD_LETTERED
  *                         WAITING
  *
- * PENDING, QUEUED and WAITING can also move to SKIPPED when an earlier step fails.
+ * WAITING is a retry's backoff or a task's stored wait. PENDING, QUEUED and
+ * WAITING can also move to SKIPPED when an earlier step fails.
  */
-export type StepRunStatus = 'PENDING' | 'QUEUED' | 'RUNNING' | 'WAITING' | 'SUCCEEDED' | 'FAILED' | 'SKIPPED';
+export type StepRunStatus = 'PENDING' | 'QUEUED' | 'RUNNING' | 'WAITING' | 'SUCCEEDED' | 'FAILED' | 'DEAD_LETTERED' | 'SKIPPED';
 
-export const FINISHED_STEP_RUN: StepRunStatus[] = ['SUCCEEDED', 'FAILED', 'SKIPPED'];
+export const FINISHED_STEP_RUN: StepRunStatus[] = ['SUCCEEDED', 'FAILED', 'DEAD_LETTERED', 'SKIPPED'];
 
 export const isFinished = (row: Pick<StepRun, 'status'>): boolean => FINISHED_STEP_RUN.includes(row.status);
+
+/** Both end the run; a dead letter is work that could have succeeded, kept for an operator to look at */
+export const isFailure = (row: Pick<StepRun, 'status'>): boolean => row.status === 'FAILED' || row.status === 'DEAD_LETTERED';
+
+/** One attempt that failed with a retryable error */
+export interface StepFailureRecord {
+  attempt: number;
+  error: string;
+  at: Date;
+}
 
 export interface StepRun {
   /** runId:stepId, plus :index for one item of a forEach step */
@@ -42,8 +53,12 @@ export interface StepRun {
   reason?: string;
   /** fanOut rows: how many items ran */
   iterations?: number;
-  /** A waiting task's wake-up time; it is resumed rather than started again */
-  resumeAt?: Date;
+  /** A WAITING row is not worked on before this time */
+  notBefore?: Date;
+  /** The task asked to wait and that wait is over or under way */
+  resumed?: boolean;
+  /** Retryable failures so far, oldest first; the next attempt is one more than their number */
+  failures?: StepFailureRecord[];
   startedAt?: Date;
   endedAt?: Date;
 }
