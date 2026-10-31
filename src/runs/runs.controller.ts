@@ -25,7 +25,7 @@ export class RunsController {
    */
   @Get(':id/result')
   async getResult(@Param('id') id: string): Promise<RunResult> {
-    return toRunResult(await this.getRun(id), await this.store.getEvents(id));
+    return toRunResult(await this.getRun(id), await this.store.getEvents(id), await this.store.getStepOutputs(id));
   }
 
   @Get(':id/events')

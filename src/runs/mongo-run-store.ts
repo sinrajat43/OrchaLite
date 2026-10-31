@@ -1,4 +1,5 @@
 import { Schema, model, models, Model } from 'mongoose';
+import { StepRun, StepRunExpectation, StepRunUpdateOptions } from '../engine/step-run';
 import { DuplicateEventError, RunStore } from './run-store';
 import { RunEvent, RunQuery, RunSummary } from './run.types';
 
@@ -41,6 +42,7 @@ const RunSummarySchema = new Schema(
     definition: Schema.Types.Mixed,
     input: Schema.Types.Mixed,
     workflow: { name: String, version: Number },
+    execution: String,
     failedStepId: String,
     error: String,
     steps: [StepSummarySchema],
@@ -52,9 +54,37 @@ const RunSummarySchema = new Schema(
 RunSummarySchema.index({ status: 1, _id: -1 });
 RunSummarySchema.index({ name: 1, _id: -1 });
 
+const StepRunSchema = new Schema(
+  {
+    _id: { type: String },
+    runId: { type: String, required: true },
+    stepId: String,
+    task: String,
+    index: Number,
+    item: Schema.Types.Mixed,
+    fanOut: Boolean,
+    status: String,
+    version: Number,
+    fence: Number,
+    output: Schema.Types.Mixed,
+    error: String,
+    reason: String,
+    iterations: Number,
+    resumeAt: Date,
+    startedAt: Date,
+    endedAt: Date,
+  },
+  // Outputs are stored as tasks returned them, even when empty
+  { versionKey: false, minimize: false }
+);
+StepRunSchema.index({ runId: 1, stepId: 1, index: 1 });
+
 const RunEventModel: Model<any> = models.RunEvent ?? model('RunEvent', RunEventSchema, 'run_events');
 const RunSummaryModel: Model<any> = models.RunSummary ?? model('RunSummary', RunSummarySchema, 'workflow_runs');
 
+const StepRunModel: Model<any> = models.StepRun ?? model('StepRun', StepRunSchema, 'step_runs');
+
+const toRow = ({ _id, ...row }: any): StepRun => ({ id: _id, ...row });
 const toEvent = ({ _id, ...event }: any): RunEvent => event;
 const toSummary = ({ _id, ...run }: any): RunSummary => ({ id: _id, ...run });
 
@@ -106,5 +136,46 @@ export class MongoRunStore implements RunStore {
   async findRunning(): Promise<RunSummary[]> {
     const runs = await RunSummaryModel.find({ status: 'RUNNING' }).lean();
     return runs.map(toSummary);
+  }
+
+  async insertStepRuns(rows: StepRun[]): Promise<void> {
+    if (!rows.length) return;
+    try {
+      await StepRunModel.insertMany(rows.map(({ id, ...row }) => ({ _id: id, ...row })), { ordered: false });
+    } catch (error) {
+      // Rows another scheduler pass already created stay as they are
+      if ((error as any)?.code !== 11000) throw error;
+    }
+  }
+
+  async getStepRun(id: string): Promise<StepRun | null> {
+    const row: any = await StepRunModel.findById(id).lean();
+    return row ? toRow(row) : null;
+  }
+
+  async listStepRuns(runId: string): Promise<StepRun[]> {
+    const rows = await StepRunModel.find({ runId }, { output: 0, item: 0 }).lean();
+    return rows.map(toRow);
+  }
+
+  async getStepOutputs(runId: string, stepIds?: string[]): Promise<Record<string, unknown>> {
+    const filter: Record<string, any> = { runId, index: null };
+    if (stepIds) filter.stepId = { $in: stepIds };
+    const rows = await StepRunModel.find(filter, { stepId: 1, output: 1 }).lean<any[]>();
+    return Object.fromEntries(rows.map(row => [row.stepId, row.output]));
+  }
+
+  async getItemOutputs(runId: string, stepId: string): Promise<unknown[]> {
+    const rows = await StepRunModel.find({ runId, stepId, index: { $ne: null } }, { output: 1 }).sort({ index: 1 }).lean<any[]>();
+    return rows.map(row => row.output);
+  }
+
+  async updateStepRun(id: string, expected: StepRunExpectation, changes: Partial<StepRun>, options: StepRunUpdateOptions = {}): Promise<StepRun | null> {
+    const filter: Record<string, any> = { _id: id };
+    if (expected.status) filter.status = { $in: expected.status };
+    if (expected.fence !== undefined) filter.fence = expected.fence;
+    const inc = { version: 1, ...(options.takeFence ? { fence: 1 } : {}) };
+    const row: any = await StepRunModel.findOneAndUpdate(filter, { $set: changes, $inc: inc }, { new: true, lean: true });
+    return row ? toRow(row) : null;
   }
 }

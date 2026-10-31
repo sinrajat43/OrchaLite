@@ -54,6 +54,16 @@ export class WorkflowDefinitionError extends Error {
   }
 }
 
+/**
+ * Error thrown when run input does not match the definition's declared input
+ */
+export class RunInputError extends Error {
+  constructor(public readonly issues: string[]) {
+    super(`Invalid run input: ${issues.join('; ')}`);
+    this.name = 'RunInputError';
+  }
+}
+
 function checkGraph(steps: WorkflowStep[], issues: string[]): void {
   const ids = new Set<string>();
 
@@ -215,4 +225,19 @@ export function validateWorkflow(definition: WorkflowDefinition, tasks: TaskLook
     throw new WorkflowDefinitionError(issues);
   }
   return { definition, steps: compiled, validateInput };
+}
+
+/**
+ * The checks a run must pass before it is accepted
+ * @returns the input, on a copy, with defaults filled in
+ * @throws WorkflowDefinitionError if the definition is invalid
+ * @throws RunInputError if the input does not match the declared input
+ */
+export function checkRun(definition: WorkflowDefinition, tasks: TaskLookup, runInput?: Record<string, unknown>): Record<string, unknown> {
+  const compiled = validateWorkflow(definition, tasks);
+  const input = structuredClone(runInput ?? {});
+  if (!compiled.validateInput(input)) {
+    throw new RunInputError(formatSchemaErrors(compiled.validateInput.errors, 'input'));
+  }
+  return input;
 }

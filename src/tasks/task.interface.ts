@@ -35,6 +35,8 @@ export interface TaskContext<TParams = unknown> {
   logger: TaskLogger;
   /** Named credentials; definitions refer to them by name and never hold secrets */
   connections: ConnectionLookup;
+  /** True when this execution follows a SuspendTask, once the wait is over */
+  resumed?: boolean;
 }
 
 /**
@@ -63,6 +65,18 @@ export interface Task<TParams = any, TOutput = any> {
    * @throws Error if the task fails; the engine wraps it in TaskExecutionError
    */
   execute(ctx: TaskContext<TParams>): Promise<TOutput>;
+}
+
+/**
+ * Thrown by a task that wants to wait. The worker frees its slot and the job is
+ * delivered again after the wait, with ctx.resumed set. The wait is a timestamp
+ * in the database, so it survives restarts and holds nothing in memory.
+ */
+export class SuspendTask extends Error {
+  constructor(public readonly ms: number) {
+    super(`Suspended for ${ms} ms`);
+    this.name = 'SuspendTask';
+  }
 }
 
 /**

@@ -9,6 +9,8 @@ import { startTestMongo } from './mongo';
 
 export interface TestApi {
   url: string;
+  /** Connection string of the throwaway database, for other processes */
+  mongoUri: string;
   request: (method: string, path: string, body?: unknown) => Promise<{ status: number; body: any }>;
   /** Stops the app and starts a new one on the same database, as after a process restart */
   restart: () => Promise<void>;
@@ -17,7 +19,7 @@ export interface TestApi {
 
 /**
  * The full HTTP API on a free port, backed by a throwaway MongoDB, with a
- * fresh encryption key for connections
+ * fresh encryption key for connections. Engine settings come from ORCHALITE_* variables.
  */
 export async function startTestApi(): Promise<TestApi> {
   process.env[SECRET_KEY_ENV] = randomBytes(32).toString('base64');
@@ -35,6 +37,7 @@ export async function startTestApi(): Promise<TestApi> {
     get url() {
       return url;
     },
+    mongoUri: `${mongo.uri}orchalite-test`,
     request: async (method, path, body) => {
       const response = await fetch(`${url}${path}`, {
         method,

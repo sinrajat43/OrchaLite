@@ -1,22 +1,29 @@
 import { DynamicModule, Module } from '@nestjs/common';
+import { InMemoryStepQueue } from '../engine/in-memory-step-queue';
+import { MongoStepQueue } from '../engine/mongo-step-queue';
+import { STEP_QUEUE, StepQueue } from '../engine/step-queue';
 import { MongoRunStore } from './mongo-run-store';
-import { RunRecorder } from './run-recorder';
 import { RUN_STORE, RunStore } from './run-store';
 import { RunsController } from './runs.controller';
 
 @Module({})
 export class RunsModule {
   /**
-   * Run history API and recorder, global so other modules can inject them.
-   * Defaults to MongoDB; tests pass an InMemoryRunStore.
+   * Run history API and the stores behind runs, global so other modules can
+   * inject them. MongoDB by default; tests pass in-memory ones.
    */
-  static forRoot(store: RunStore = new MongoRunStore()): DynamicModule {
+  static forRoot(store: RunStore = new MongoRunStore(), queue: StepQueue = new MongoStepQueue()): DynamicModule {
     return {
       module: RunsModule,
       global: true,
       controllers: [RunsController],
-      providers: [{ provide: RUN_STORE, useValue: store }, RunRecorder],
-      exports: [RUN_STORE, RunRecorder],
+      providers: [{ provide: RUN_STORE, useValue: store }, { provide: STEP_QUEUE, useValue: queue }],
+      exports: [RUN_STORE, STEP_QUEUE],
     };
+  }
+
+  /** Both stores in process memory */
+  static inMemory(store: RunStore, queue: StepQueue = new InMemoryStepQueue()): DynamicModule {
+    return RunsModule.forRoot(store, queue);
   }
 }

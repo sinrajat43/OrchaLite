@@ -23,13 +23,17 @@ const TERMINAL: RunStatus[] = ['SUCCEEDED', 'FAILED', 'ABANDONED'];
 export const isTerminal = (status: RunStatus): boolean => TERMINAL.includes(status);
 
 /**
- * Builds a run's result from its summary and the outputs in its timeline
+ * Builds a run's result from its summary, the outputs in its timeline, and the
+ * step rows' outputs, which are complete where the timeline only keeps a preview
  */
-export function toRunResult(run: RunSummary, events: RunEvent[]): RunResult {
+export function toRunResult(run: RunSummary, events: RunEvent[], rowOutputs: Record<string, unknown> = {}): RunResult {
   const outputs = new Map(events.filter(e => e.type === 'StepSucceeded').map(e => [e.data.stepId, e.data.output]));
+  for (const [stepId, output] of Object.entries(rowOutputs)) {
+    if (output !== undefined) outputs.set(stepId, output);
+  }
   const steps = run.steps.map(step => {
     const outcome: StepOutcome = { status: step.status.toLowerCase() as StepOutcome['status'] };
-    if (outputs.get(step.id) !== undefined) outcome.output = outputs.get(step.id);
+    if (step.status === 'SUCCEEDED' && outputs.get(step.id) !== undefined) outcome.output = outputs.get(step.id);
     if (step.iterations !== undefined) outcome.iterations = step.iterations;
     if (step.reason) outcome.reason = step.reason;
     if (step.error) outcome.error = step.error;

@@ -1,3 +1,4 @@
+import { StepRun, StepRunExpectation, StepRunUpdateOptions } from '../engine/step-run';
 import { RunEvent, RunQuery, RunSummary } from './run.types';
 
 /** Nest injection token for the RunStore */
@@ -23,6 +24,22 @@ export interface RunStore {
   /** Oldest first, optionally only those after a seq */
   getEvents(runId: string, afterSeq?: number): Promise<RunEvent[]>;
   findRunning(): Promise<RunSummary[]>;
+
+  /** Adds rows, leaving any that already exist as they are */
+  insertStepRuns(rows: StepRun[]): Promise<void>;
+  getStepRun(id: string): Promise<StepRun | null>;
+  /** Every row of a run, without outputs or items, which can be large */
+  listStepRuns(runId: string): Promise<StepRun[]>;
+  /** Outputs of the named steps, by step id */
+  getStepOutputs(runId: string, stepIds?: string[]): Promise<Record<string, unknown>>;
+  /** Outputs of a forEach step's items, in order */
+  getItemOutputs(runId: string, stepId: string): Promise<unknown[]>;
+  /**
+   * Applies changes only if the row still meets the expectation, as one atomic
+   * step, and raises its version
+   * @returns the updated row, or null if the expectation failed and nothing changed
+   */
+  updateStepRun(id: string, expected: StepRunExpectation, changes: Partial<StepRun>, options?: StepRunUpdateOptions): Promise<StepRun | null>;
 }
 
 export class DuplicateEventError extends Error {

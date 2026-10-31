@@ -35,7 +35,7 @@ const msBetween = (from: Date | undefined, to: Date): number | undefined =>
  */
 export function applyEvent(summary: RunSummary | null, event: RunEvent): RunSummary {
   if (event.type === 'RunStarted') {
-    const { definition, input, workflow } = event.data;
+    const { definition, input, workflow, execution } = event.data;
     return {
       id: event.runId,
       name: definition.name,
@@ -44,6 +44,7 @@ export function applyEvent(summary: RunSummary | null, event: RunEvent): RunSumm
       definition,
       ...(input ? { input } : {}),
       ...(workflow ? { workflow } : {}),
+      ...(execution ? { execution } : {}),
       steps: definition.steps.map((step: any) => ({ id: step.id, task: step.task, status: 'PENDING' })),
       lastSeq: event.seq,
     };

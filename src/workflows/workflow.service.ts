@@ -1,10 +1,10 @@
-import { BadRequestException, BeforeApplicationShutdown, Inject, Injectable, InternalServerErrorException } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, InternalServerErrorException } from '@nestjs/common';
 import { Response } from 'express';
-import { ConnectionsService } from '../connections/connections.service';
-import { checkRun, runWorkflow, RunInputError } from '../orchestrator/task-runner.util';
+import { Types } from 'mongoose';
+import { EngineSignals } from '../engine/engine-signals';
 import { TaskRegistry } from '../orchestrator/task-registry.service';
-import { validateWorkflow, WorkflowDefinition, WorkflowDefinitionError } from '../orchestrator/workflow-definition';
-import { RunHandle, RunRecorder } from '../runs/run-recorder';
+import { checkRun, RunInputError, validateWorkflow, WorkflowDefinition, WorkflowDefinitionError } from '../orchestrator/workflow-definition';
+import { appendRunEvent } from '../runs/run-recorder';
 import { isTerminal, RunResult, toRunResult } from '../runs/run-result';
 import { RUN_STORE, RunStore } from '../runs/run-store';
 import { WorkflowRef } from '../runs/run.types';
@@ -29,17 +29,17 @@ export interface AcceptedRun {
   workflow?: WorkflowRef;
 }
 
+// A definition can arrive as DTO class instances, which should not reach the database
+const plain = <T>(value: T): T => JSON.parse(JSON.stringify(value));
+
 const WAIT_POLL_MS = 25;
 const MAX_WAIT_MS = 60_000;
 
 @Injectable()
-export class WorkflowService implements BeforeApplicationShutdown {
-  private readonly inFlight = new Set<Promise<void>>();
-
+export class WorkflowService {
   constructor(
     private readonly tasks: TaskRegistry,
-    private readonly connections: ConnectionsService,
-    private readonly runRecorder: RunRecorder,
+    private readonly signals: EngineSignals,
     @Inject(RUN_STORE) private readonly runs: RunStore
   ) {}
 
@@ -55,24 +55,23 @@ export class WorkflowService implements BeforeApplicationShutdown {
   }
 
   /**
-   * Accepts a run: checks it, records that it started, and runs it in the
-   * background, so the caller gets a run id without waiting for any step.
+   * Accepts a run: checks it and records that it started. That record is the
+   * only thing the scheduler needs, so the run survives this process.
    * @param workflow - The stored version the definition came from, if any
    * @throws BadRequestException if the definition or input is invalid; nothing is recorded
    */
   async start(definition: WorkflowDefinition, runInput?: Record<string, unknown>, workflow?: WorkflowRef): Promise<AcceptedRun> {
     let input: Record<string, unknown>;
     try {
-      ({ input } = checkRun(definition, this.tasks, runInput));
+      input = checkRun(definition, this.tasks, runInput);
     } catch (error) {
       throw toHttpError(error);
     }
 
-    const run = this.runRecorder.prepare(definition, workflow);
-    await run.hooks.onRunStarted(input);
-    const finished = this.execute(run, definition, input).finally(() => this.inFlight.delete(finished));
-    this.inFlight.add(finished);
-    return { runId: run.runId, status: 'RUNNING', ...(workflow ? { workflow } : {}) };
+    const runId = new Types.ObjectId().toHexString();
+    await appendRunEvent(this.runs, runId, 'RunStarted', { definition: plain(definition), input, workflow, execution: 'queue' });
+    this.signals.runChanged(runId);
+    return { runId, status: 'RUNNING', ...(workflow ? { workflow } : {}) };
   }
 
   /**
@@ -97,36 +96,15 @@ export class WorkflowService implements BeforeApplicationShutdown {
     return result;
   }
 
-  /** Waits for in-flight runs, so their last events are written before the database closes */
-  async beforeApplicationShutdown(): Promise<void> {
-    await Promise.all(this.inFlight);
-  }
-
   private async waitForResult(runId: string): Promise<RunResult | null> {
     const deadline = Date.now() + MAX_WAIT_MS;
     while (Date.now() < deadline) {
       const run = await this.runs.getRun(runId);
-      if (run && isTerminal(run.status)) return toRunResult(run, await this.runs.getEvents(runId));
+      if (run && isTerminal(run.status)) {
+        return toRunResult(run, await this.runs.getEvents(runId), await this.runs.getStepOutputs(runId));
+      }
       await new Promise(resolve => setTimeout(resolve, WAIT_POLL_MS));
     }
     return null;
-  }
-
-  private async execute(run: RunHandle, definition: WorkflowDefinition, input: Record<string, unknown>): Promise<void> {
-    try {
-      console.log(`Starting workflow: ${definition.name} (run ${run.runId})`);
-      await runWorkflow(definition, this.tasks, {
-        input,
-        connections: this.connections,
-        runId: run.runId,
-        // onRunStarted already fired when the run was accepted
-        hooks: { ...run.hooks, onRunStarted: undefined },
-      });
-      await run.succeed();
-      console.log(`Completed workflow: ${definition.name} (run ${run.runId})`);
-    } catch (error) {
-      console.error('Workflow execution failed:', error);
-      await run.fail(error as Error);
-    }
   }
 }

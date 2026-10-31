@@ -55,7 +55,7 @@ class SlowTask extends TestTask {
 // Tasks registered outside the engine's modules, the way any new task would be.
 // WorkflowModule alone, plus these, with run history in memory, so no MongoDB connection is needed.
 @Module({
-  imports: [RunsModule.forRoot(new InMemoryRunStore()), WorkflowModule],
+  imports: [RunsModule.inMemory(new InMemoryRunStore()), WorkflowModule],
   providers: [OneTask, DoubleTask, NothingTask, BoomTask, SlowTask],
 })
 class TestAppModule {}
@@ -293,10 +293,12 @@ describe('HTTP API', () => {
       expect(Date.parse(run.body.steps[0].startedAt)).not.toBeNaN();
 
       const events = await getJson(`/runs/${runId}/events`);
-      expect(events.body.map((e: any) => e.type)).toEqual([
-        'RunStarted', 'StepStarted', 'StepSucceeded', 'StepStarted', 'StepSucceeded', 'StepStarted', 'StepSkipped', 'RunSucceeded',
-      ]);
-      expect(events.body[4].data).toEqual({ stepId: 'b', output: 4 });
+      const timeline = events.body.map((e: any) => [e.type, e.data.stepId].filter(Boolean).join(' '));
+      expect(timeline.slice(0, 3)).toEqual(['RunStarted', 'StepStarted a', 'StepSucceeded a']);
+      expect(timeline.slice(3, 7).sort()).toEqual(['StepSkipped off', 'StepStarted b', 'StepStarted off', 'StepSucceeded b']);
+      expect(timeline.indexOf('StepStarted b')).toBeLessThan(timeline.indexOf('StepSucceeded b'));
+      expect(timeline[7]).toBe('RunSucceeded');
+      expect(events.body.find((e: any) => e.type === 'StepSucceeded' && e.data.stepId === 'b').data).toEqual({ stepId: 'b', output: 4 });
     });
 
     it('records a failed run with the failed and skipped steps', async () => {

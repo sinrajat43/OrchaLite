@@ -63,6 +63,8 @@ export interface RunSummary {
   input?: Record<string, unknown>;
   /** Set when the run came from a stored workflow */
   workflow?: WorkflowRef;
+  /** Set on runs driven by the scheduler and workers; older runs have no step rows */
+  execution?: 'queue';
   failedStepId?: string;
   error?: string;
   steps: StepSummary[];

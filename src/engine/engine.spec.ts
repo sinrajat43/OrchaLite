@@ -1,5 +1,7 @@
-import { MAX_FOR_EACH_ITEMS, runWorkflow, RunInputError } from './task-runner.util';
-import { validateWorkflow, WorkflowDefinition, WorkflowDefinitionError, WorkflowStep } from './workflow-definition';
+import { MAX_FOR_EACH_ITEMS } from './scheduler';
+import { RunInputError, validateWorkflow, WorkflowDefinition, WorkflowDefinitionError, WorkflowStep } from '../orchestrator/workflow-definition';
+import { InMemoryRunStore } from '../runs/in-memory-run-store';
+import { runWorkflow } from '../testing/run-workflow';
 import { Task, TaskContext, TaskExecutionError } from '../tasks/task.interface';
 import { Type } from '@sinclair/typebox';
 import { connectionsOf, fakeTask, silentLogger } from '../testing/task-context';
@@ -286,7 +288,7 @@ describe('runWorkflow', () => {
     ]);
   });
 
-  it('wraps a task failure with its cause and stops later steps', async () => {
+  it('reports a task failure by step and stops later steps', async () => {
     const after = jest.fn(async () => 1);
     const tasks = lookup({
       boom: fakeTask(async () => {
@@ -302,7 +304,6 @@ describe('runWorkflow', () => {
       taskId: 'a',
       taskName: 'boom',
       message: 'Task execution failed: kaput',
-      cause: expect.objectContaining({ message: 'kaput' }),
     });
     expect(after).not.toHaveBeenCalled();
   });
@@ -440,17 +441,11 @@ describe('runWorkflow', () => {
     expect(first.runId).not.toBe(second.runId);
   });
 
-  it('reports the run and each step to the hooks, in order', async () => {
-    const calls: string[] = [];
+  it("records the run and each step on the run's timeline, in order", async () => {
     const boom = fakeTask(async () => {
       throw new Error('kaput');
     });
-    const hooks = {
-      onRunStarted: async (input: Record<string, unknown>) => { calls.push(`run ${JSON.stringify(input)}`); },
-      onStepStarted: async (s: WorkflowStep) => { calls.push(`start ${s.id}`); },
-      onStepFinished: async (s: WorkflowStep, r: { status: string; reason?: string }) => { calls.push(`${r.status} ${s.id}${r.reason ? ` (${r.reason})` : ''}`); },
-      onStepFailed: async (s: WorkflowStep, e: TaskExecutionError) => { calls.push(`fail ${s.id}: ${e.message}`); },
-    };
+    const store = new InMemoryRunStore();
 
     await expect(
       runWorkflow(
@@ -458,38 +453,97 @@ describe('runWorkflow', () => {
           [
             step('a', 't', [], { n: '{{ input.n }}' }),
             step('skip', 't', ['a'], undefined, { when: '{{ false }}' }),
-            step('b', 'boom', ['a']),
+            step('b', 'boom', ['skip']),
+            step('c', 'boom', ['a']),
           ],
           { n: { type: 'integer', default: 3 } }
         ),
         lookup({ t: echo, boom }),
-        { ...quiet, hooks }
+        { ...quiet, store, runId: 'r' }
       )
     ).rejects.toBeInstanceOf(TaskExecutionError);
 
-    expect(calls).toEqual([
-      'run {"n":3}',
-      'start a',
-      'succeeded a',
-      'start skip',
-      'skipped skip (when was false)',
-      'start b',
-      'fail b: Task execution failed: kaput',
+    const events = await store.getEvents('r');
+    expect(events.map(e => [e.type, e.data.stepId].filter(Boolean).join(' '))).toEqual([
+      'RunStarted',
+      'StepStarted a',
+      'StepSucceeded a',
+      'StepStarted skip',
+      'StepSkipped skip',
+      'StepStarted b',
+      'StepSkipped b',
+      'StepStarted c',
+      'StepFailed c',
+      'RunFailed',
     ]);
+    expect(events[0].data.input).toEqual({ n: 3 });
+    expect(events[2].data.output).toEqual({ n: 3 });
+    expect(events[4].data.reason).toBe('when was false');
+    expect(events[6].data.reason).toBe('dependency "skip" was skipped');
+    expect(events[8].data.error).toBe('Task execution failed: kaput');
+    expect(events[9].data).toEqual({ failedStepId: 'c', error: 'Task execution failed: kaput' });
   });
+});
 
-  it('does not report a run whose definition or input is rejected', async () => {
-    const onRunStarted = jest.fn(async () => undefined);
-    await expect(
-      runWorkflow(workflow([step('a', 't')], { n: 'integer' }), anyTasks, { ...quiet, input: { n: 'x' }, hooks: { onRunStarted } })
-    ).rejects.toBeInstanceOf(RunInputError);
-    expect(onRunStarted).not.toHaveBeenCalled();
+describe('fencing', () => {
+  it('drops the result of a worker that lost its lease and a newer worker replaced', async () => {
+    const { InMemoryStepQueue } = jest.requireActual('./in-memory-step-queue');
+    const { EngineSignals } = jest.requireActual('./engine-signals');
+    const { Worker } = jest.requireActual('./worker');
+    const store = new InMemoryRunStore();
+    const queue = new InMemoryStepQueue();
+
+    const log: string[] = [];
+    let release: () => void;
+    const gate = new Promise<void>(resolve => (release = resolve));
+    const tasks = lookup({
+      t: fakeTask(async ({ attempt }) => {
+        log.push('started');
+        if (log.length === 1) {
+          await gate;
+          return 'stale';
+        }
+        return `fresh ${attempt}`;
+      }),
+    });
+    const definition = workflow([step('a', 't')]);
+    await store.saveSummary(
+      { id: 'r', name: 'test', status: 'RUNNING', startedAt: new Date(), definition, steps: [], lastSeq: 1, execution: 'queue' },
+      0
+    );
+    await store.insertStepRuns([{ id: 'r:a', runId: 'r', stepId: 'a', task: 't', status: 'QUEUED', version: 1, fence: 0 }]);
+    await queue.enqueue({ id: 'r:a', runId: 'r' });
+
+    const worker = (leaseMs: number) =>
+      new Worker({ store, queue, tasks, signals: new EngineSignals(), connections: { get: async () => null }, createLogger: () => silentLogger, options: { leaseMs, workerSlots: 1, workerPollMs: 2 } });
+
+    jest.spyOn(jest.requireActual('@nestjs/common').Logger.prototype, 'warn').mockImplementation(() => undefined);
+    // A heartbeat that cannot keep up: the lease runs out mid-task
+    jest.spyOn(queue, 'extend').mockResolvedValue(false);
+
+    const zombie = worker(10);
+    zombie.start();
+    while (!log.length) await new Promise(resolve => setTimeout(resolve, 2));
+    await new Promise(resolve => setTimeout(resolve, 30));
+
+    const replacement = worker(5000);
+    replacement.start();
+    while ((await store.getStepRun('r:a')).status !== 'SUCCEEDED') await new Promise(resolve => setTimeout(resolve, 2));
+    await replacement.stop();
+
+    release();
+    await zombie.stop();
+
+    const row = await store.getStepRun('r:a');
+    expect(log).toEqual(['started', 'started']);
+    expect(row).toMatchObject({ status: 'SUCCEEDED', output: 'fresh 1', fence: 2 });
+    jest.restoreAllMocks();
   });
 });
 
 describe('formatSchemaErrors', () => {
   it('reports a failed anyOf once, and lists the values an enum allows', () => {
-    const { formatSchemaErrors, validatorFor } = jest.requireActual('./schema-validator');
+    const { formatSchemaErrors, validatorFor } = jest.requireActual('../orchestrator/schema-validator');
     const validate = validatorFor({
       type: 'object',
       properties: {

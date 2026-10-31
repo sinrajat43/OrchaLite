@@ -243,10 +243,15 @@ decide what a persisted step record has to store.
   - Done when: a run's full history can be read back after the process
     restarts.
 
-- [ ] **B2. API, scheduler and workers split**
+- [x] **B2. API, scheduler and workers split** (done 2026-10-31)
   - Build: a scheduler that queues ready steps; workers that claim a step with
-    a lease and heartbeat; requeue on lease expiry. First on MongoDB
-    (`findOneAndUpdate`), then BullMQ behind the same interface.
+    a lease and heartbeat; requeue on lease expiry, on a `StepQueue` port with a
+    MongoDB adapter (`findOneAndUpdate`); `ORCHALITE_ROLES` to run each part as
+    its own process; `delay` as a stored wait. See
+    [engine-design.md](engine-design.md).
+  - Not built: the BullMQ adapter. It needs Redis, which was not available to
+    test against, and the done-when does not depend on it. The contract tests
+    in `engine/step-queue.spec.ts` are ready for it.
   - Teaches: at-least-once delivery, leases and visibility timeouts, crash
     recovery, ports and adapters.
   - Done when: a test kills a worker mid-step and the run completes on another
@@ -366,3 +371,10 @@ Several of these come back in later horizons, noted on each item.
 | 2026-10-31 | Run requests return `202` with a run id; `?wait=true` holds the request open by polling the run's state, and returns `200` or the failed step's `500` | Execution no longer depends on the request. The wait only reads state, so it keeps working once API and workers are separate processes |
 | 2026-10-31 | `lastSeq` is the run's version: an append claims the next seq through the unique `(runId, seq)` index and retries on a collision; the summary is replaced only if its `lastSeq` is unchanged | Optimistic concurrency without locks, so any number of writers can share a run. A summary left behind by a crash catches up from the events on the next append |
 | 2026-10-31 | The projection rejects any event its state machine does not allow from the current state | A stale writer or an engine bug fails loudly instead of quietly rewriting history |
+| 2026-10-31 | `step_runs` holds each unit of work and its full output; `run_events` stays the timeline. Workers write only rows, and the scheduler derives lifecycle events by comparing rows with the summary | Items and leases need atomic per-row updates that a single summary document would turn into contention. One author per run keeps the timeline simple, and comparing state makes every pass safe to repeat after a crash. This settles where large outputs live: in full on the row, as a preview in the event |
+| 2026-10-31 | The scheduler is level-triggered and idempotent, so several can run at once | A crash or missed nudge only costs time; the next pass closes the gap. In-process nudges exist purely for latency |
+| 2026-10-31 | The queue uses a visibility timeout: claiming moves `visibleAt` forward by the lease | Expiry needs no reaper, because a dead worker's job simply becomes visible again |
+| 2026-10-31 | Each worker that takes a row raises its fencing token and can commit only under that value | A lease cannot stop a paused worker from waking up and writing. The check has to be at the write, not the claim |
+| 2026-10-31 | A job holds only the row id | All state stays in one place, so losing or duplicating a job costs nothing and any queue can be swapped in |
+| 2026-10-31 | `delay` throws `SuspendTask`: the job comes back at the wake-up time with `ctx.resumed` set; the cap rises to 90 days | A wait is a timestamp in the database, surviving restarts and holding no worker |
+| 2026-10-31 | The kill test runs compiled workers as real child processes and sends `SIGKILL` | An in-process stand-in cannot prove crash recovery (principle 3) |
