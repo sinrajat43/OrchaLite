@@ -33,6 +33,11 @@ export interface StepRun {
   runId: string;
   stepId: string;
   task: string;
+  /** The workflow's name, for limits that span its runs */
+  workflow?: string;
+  /** Copied from the definition when the row is created, so admission does not need the definition */
+  stepLimit?: number;
+  workflowLimit?: number;
   /** Set on one item of a forEach step */
   index?: number;
   item?: unknown;
@@ -57,6 +62,8 @@ export interface StepRun {
   notBefore?: Date;
   /** The task asked to wait and that wait is over or under way */
   resumed?: boolean;
+  /** Times this row gave up its worker on purpose, for a stored wait or a rate limit */
+  yields?: number;
   /** Retryable failures so far, oldest first; the next attempt is one more than their number */
   failures?: StepFailureRecord[];
   startedAt?: Date;
@@ -69,6 +76,15 @@ export const stepRunId = (runId: string, stepId: string, index?: number): string
 /** A new row, before anything has happened to it */
 export function newStepRun(fields: Pick<StepRun, 'runId' | 'stepId' | 'task'> & Partial<StepRun>): StepRun {
   return { id: stepRunId(fields.runId, fields.stepId, fields.index), status: 'PENDING', version: 1, fence: 0, ...fields };
+}
+
+/** How much work one group of rows has in flight */
+export interface InFlightCount {
+  runId: string;
+  stepId: string;
+  task: string;
+  workflow?: string;
+  count: number;
 }
 
 /** What a conditional update requires of a row */

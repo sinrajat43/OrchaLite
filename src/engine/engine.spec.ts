@@ -1,4 +1,5 @@
 import { MAX_FOR_EACH_ITEMS } from './scheduler';
+import { InMemoryRateLimiter } from './rate-limiter';
 import { RunInputError, validateWorkflow, WorkflowDefinition, WorkflowDefinitionError, WorkflowStep } from '../orchestrator/workflow-definition';
 import { InMemoryRunStore } from '../runs/in-memory-run-store';
 import { runWorkflow } from '../testing/run-workflow';
@@ -579,7 +580,7 @@ describe('failure semantics', () => {
     );
 
     expect(results.steps.a).toMatchObject({ output: [1, 2, 3], iterations: 3 });
-    expect(calls).toEqual([1, 2, 2, 3]);
+    expect([...calls].sort()).toEqual([1, 2, 2, 3]);
   });
 
   it('times out a task that ignores its signal, aborting the signal and freeing the slot', async () => {
@@ -627,7 +628,7 @@ describe('failure semantics', () => {
     await store.insertStepRuns([{ id: 'r:a', runId: 'r', stepId: 'a', task: 't', status: 'RUNNING', version: 1, fence: 5 }]);
     await queue.enqueue({ id: 'r:a', runId: 'r' });
 
-    const worker = new Worker({ store, queue, tasks: lookup({ t: fakeTask(execute) }), signals: new EngineSignals(), connections: null, createLogger: () => silentLogger, options: { leaseMs: 1000, workerSlots: 1, workerPollMs: 2, defaultStepTimeoutMs: 1000, maxLostDeliveries: 5 } });
+    const worker = new Worker({ store, queue, tasks: lookup({ t: fakeTask(execute) }), signals: new EngineSignals(), connections: null, limiter: null, createLogger: () => silentLogger, options: { leaseMs: 1000, workerSlots: 1, workerPollMs: 2, defaultStepTimeoutMs: 1000, maxLostDeliveries: 5 } });
     worker.start();
     while ((await store.getStepRun('r:a')).status === 'RUNNING') await new Promise(resolve => setTimeout(resolve, 2));
     await worker.stop();
@@ -635,6 +636,141 @@ describe('failure semantics', () => {
     expect(await store.getStepRun('r:a')).toMatchObject({ status: 'DEAD_LETTERED', error: expect.stringContaining('5 deliveries') });
     expect(execute).not.toHaveBeenCalled();
     expect(await queue.claim('w', 1000)).toBeNull();
+  });
+});
+
+describe('parallelism', () => {
+  beforeAll(() => {
+    jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    jest.spyOn(console, 'error').mockImplementation(() => undefined);
+  });
+  afterAll(() => jest.restoreAllMocks());
+
+  /** A task that tracks how many of it run at once */
+  const tracked = (ms = 5) => {
+    let current = 0;
+    const stats = { peak: 0, calls: 0 };
+    const task = fakeTask(async ({ params }) => {
+      stats.calls++;
+      stats.peak = Math.max(stats.peak, ++current);
+      await new Promise(resolve => setTimeout(resolve, ms));
+      current--;
+      return params;
+    });
+    return { task, stats };
+  };
+
+  it('runs independent steps at the same time', async () => {
+    const { task, stats } = tracked(30);
+
+    await runWorkflow(workflow([step('a', 't'), step('b', 't'), step('c', 't'), step('d', 't', ['a', 'b', 'c'])]), lookup({ t: task }), { ...quiet, workerSlots: 4 });
+
+    expect(stats.peak).toBe(3);
+  });
+
+  it('keeps forEach outputs in item order, whatever order they finish in', async () => {
+    const task = fakeTask(async ({ params }: TaskContext<{ v: number }>) => {
+      await new Promise(resolve => setTimeout(resolve, 30 - params.v * 10));
+      return params.v;
+    });
+
+    const results = await runWorkflow(
+      workflow([step('a', 't', [], { v: '{{ item }}' }, { forEach: '{{ [0, 1, 2] }}' })]),
+      lookup({ t: task }),
+      { ...quiet, workerSlots: 3 }
+    );
+
+    expect(results.steps.a).toMatchObject({ output: [0, 1, 2], iterations: 3 });
+  });
+
+  it('respects a forEach step\'s concurrency', async () => {
+    const { task, stats } = tracked();
+
+    await runWorkflow(
+      workflow([{ ...step('a', 't', [], { v: '{{ item }}' }, { forEach: '{{ [1..30] }}' }), concurrency: 3 }]),
+      lookup({ t: task }),
+      { ...quiet, workerSlots: 10 }
+    );
+
+    expect(stats.calls).toBe(30);
+    expect(stats.peak).toBe(3);
+  });
+
+  it('respects a workflow\'s concurrency across its steps', async () => {
+    const { task, stats } = tracked();
+    const definition = { ...workflow([step('a', 't'), step('b', 't'), step('c', 't'), step('d', 't'), step('e', 't')]), concurrency: 2 };
+
+    await runWorkflow(definition, lookup({ t: task }), { ...quiet, workerSlots: 10 });
+
+    expect(stats.peak).toBe(2);
+  });
+
+  it('stops new work after a failure, lets running work finish, and fails the run', async () => {
+    const finished: string[] = [];
+    const task = fakeTask(async ({ params }: TaskContext<{ name: string; fail?: boolean }>) => {
+      if (params.fail) throw new Error('boom');
+      await new Promise(resolve => setTimeout(resolve, 30));
+      finished.push(params.name);
+    });
+    const store = new InMemoryRunStore();
+
+    await expect(
+      runWorkflow(
+        workflow([step('slow', 't', [], { name: 'slow' }), step('bad', 't', [], { name: 'bad', fail: true }), step('after', 't', ['slow'], { name: 'after' })]),
+        lookup({ t: task }),
+        { ...quiet, workerSlots: 4, store, runId: 'r' }
+      )
+    ).rejects.toMatchObject({ taskId: 'bad' });
+
+    expect(finished).toEqual(['slow']);
+    const run = await store.getRun('r');
+    expect(run.status).toBe('FAILED');
+    expect(run.steps.map(s => s.status).sort()).toEqual(['FAILED', 'SKIPPED', 'SUCCEEDED']);
+  });
+
+  it('rejects concurrency on a step that is not a forEach', () => {
+    expect(issuesOf(() => validateWorkflow(workflow([{ ...step('a', 't'), concurrency: 2 }]), anyTasks))).toEqual([
+      'Step "a" concurrency only applies to a forEach step',
+    ]);
+  });
+
+  describe('rate limits', () => {
+    const limited = { name: 'api', type: 'http' as const, baseUrl: 'http://x', headers: {}, query: {}, rateLimit: { perSecond: 50 } };
+    const usingConnection = (at: number[]) =>
+      fakeTask(async ({ connections }) => {
+        await connections.get('api');
+        at.push(Date.now());
+      });
+
+    it('spaces out calls that use a connection, without failing or using up attempts', async () => {
+      const at: number[] = [];
+      const store = new InMemoryRunStore();
+
+      await runWorkflow(
+        workflow([step('a', 't', [], {}, { forEach: '{{ [1..10] }}' })]),
+        lookup({ t: usingConnection(at) }),
+        { ...quiet, workerSlots: 5, connections: connectionsOf(limited), store, runId: 'r' }
+      );
+
+      expect(at).toHaveLength(10);
+      // 10 calls at 50 per second take at least 9 gaps of 20 ms
+      expect(Math.max(...at) - Math.min(...at)).toBeGreaterThanOrEqual(150);
+      const rows = await store.listStepRuns('r');
+      expect(rows.filter(r => r.failures?.length)).toEqual([]);
+    });
+
+    it('spends one call per execution, however often a task looks the connection up', async () => {
+      const limiter = new InMemoryRateLimiter();
+      const acquire = jest.spyOn(limiter, 'acquire');
+      const task = fakeTask(async ({ connections }) => {
+        await connections.get('api');
+        await connections.get('api');
+      });
+
+      await runWorkflow(workflow([step('a', 't')]), lookup({ t: task }), { ...quiet, connections: connectionsOf(limited), limiter });
+
+      expect(acquire).toHaveBeenCalledTimes(1);
+    });
   });
 });
 
@@ -668,7 +804,7 @@ describe('fencing', () => {
     await queue.enqueue({ id: 'r:a', runId: 'r' });
 
     const worker = (leaseMs: number) =>
-      new Worker({ store, queue, tasks, signals: new EngineSignals(), connections: { get: async () => null }, createLogger: () => silentLogger, options: { leaseMs, workerSlots: 1, workerPollMs: 2, defaultStepTimeoutMs: 30_000, maxLostDeliveries: 5 } });
+      new Worker({ store, queue, tasks, signals: new EngineSignals(), connections: { get: async () => null }, limiter: null, createLogger: () => silentLogger, options: { leaseMs, workerSlots: 1, workerPollMs: 2, defaultStepTimeoutMs: 30_000, maxLostDeliveries: 5 } });
 
     jest.spyOn(jest.requireActual('@nestjs/common').Logger.prototype, 'warn').mockImplementation(() => undefined);
     // A heartbeat that cannot keep up: the lease runs out mid-task

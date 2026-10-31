@@ -21,6 +21,8 @@ export interface WorkflowStep {
   retry?: RetryPolicy;
   /** Limit for one attempt; a task that outlasts it is aborted and the attempt fails */
   timeoutMs?: number;
+  /** forEach steps: how many items may be in flight at once */
+  concurrency?: number;
 }
 
 export interface RetryPolicy {
@@ -37,6 +39,8 @@ export interface WorkflowDefinition {
   name: string;
   /** Values a run must supply, by name */
   input?: Record<string, InputDeclaration>;
+  /** How many steps may be in flight at once, across all runs of this workflow */
+  concurrency?: number;
   steps: WorkflowStep[];
 }
 
@@ -215,6 +219,9 @@ export function validateWorkflow(definition: WorkflowDefinition, tasks: TaskLook
       issues.push(...checkParams(task, step.params ?? {}, params.expressions.map(e => e.pointer)).map(issue => `${where} ${issue}`));
     }
 
+    if (step.concurrency !== undefined && step.forEach === undefined) {
+      issues.push(`${where} concurrency only applies to a forEach step`);
+    }
     if (step.retry !== undefined && !validateRetry(structuredClone(step.retry))) {
       issues.push(...formatSchemaErrors(validateRetry.errors, 'retry').map(issue => `${where} ${issue}`));
     }

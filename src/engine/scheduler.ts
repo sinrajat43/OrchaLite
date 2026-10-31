@@ -21,7 +21,7 @@ export interface SchedulerDeps {
   queue: StepQueue;
   tasks: TaskLookup;
   signals: EngineSignals;
-  options: Pick<EngineOptions, 'schedulerIntervalMs'>;
+  options: Pick<EngineOptions, 'schedulerIntervalMs' | 'runWindow' | 'taskLimits'>;
 }
 
 const SKIP_AFTER_FAILURE = 'an earlier step failed';
@@ -44,6 +44,10 @@ export class Scheduler {
   /** Runs being advanced in this process; a nudge during a pass asks for another pass */
   private readonly advancing = new Map<string, { promise: Promise<void>; again: boolean }>();
   private unsubscribe?: () => void;
+  /** At most one admission at a time in this process, or two could spend the same free slot */
+  private admitting?: { promise: Promise<void>; again: boolean };
+  /** Which run admission starts with, moved on each time so no run is always first */
+  private rotation = 0;
 
   constructor(private readonly deps: SchedulerDeps) {
     this.compiled = new CompiledRuns(deps.tasks);
@@ -59,6 +63,7 @@ export class Scheduler {
     clearInterval(this.timer);
     await this.ticking;
     await Promise.all([...this.advancing.values()].map(entry => entry.promise));
+    await this.admitting?.promise;
   }
 
   private tick(): void {
@@ -71,6 +76,8 @@ export class Scheduler {
       for (const run of await this.deps.store.findRunning()) {
         await this.advance(run.id);
       }
+      // Slots may have freed up for runs that had no reason to be advanced
+      await this.admit();
     } catch (error) {
       this.logger.error(`Scheduler: ${(error as Error).message}`);
     }
@@ -131,7 +138,7 @@ export class Scheduler {
     const reported = await this.report(run, steps, mine);
     if (reported) return true;
 
-    await this.admit(rows);
+    await this.admit();
     return this.finish(run, steps, rows, mine);
   }
 
@@ -165,7 +172,14 @@ export class Scheduler {
     for (const compiled of steps.values()) {
       const { step } = compiled;
       if (mine.has(step.id)) continue;
-      const base = { runId: run.id, stepId: step.id, task: step.task };
+      const base = {
+        runId: run.id,
+        stepId: step.id,
+        task: step.task,
+        workflow: run.name,
+        ...(step.concurrency ? { stepLimit: step.concurrency } : {}),
+        ...(run.definition.concurrency ? { workflowLimit: run.definition.concurrency } : {}),
+      };
 
       if (failed) {
         created.push(newStepRun({ ...base, status: 'SKIPPED', reason: SKIP_AFTER_FAILURE }));
@@ -186,7 +200,7 @@ export class Scheduler {
     run: RunSummary,
     { step, when, forEach, upstream }: CompiledStep,
     dependencies: StepRun[],
-    base: Pick<StepRun, 'runId' | 'stepId' | 'task'>
+    base: Pick<StepRun, 'runId' | 'stepId' | 'task' | 'workflow' | 'stepLimit' | 'workflowLimit'>
   ): Promise<StepRun[]> {
     const now = new Date();
     const skip = (reason: string) => [newStepRun({ ...base, status: 'SKIPPED', reason, startedAt: now, endedAt: now })];
@@ -276,23 +290,83 @@ export class Scheduler {
     return wrote;
   }
 
-  /** Queues work that is ready. The job goes first: enqueueing is idempotent, so a crash here only repeats it. */
-  private async admit(rows: StepRun[]): Promise<void> {
-    const { store, queue, signals } = this.deps;
-    const busy = new Set(rows.filter(row => row.index !== undefined && ['QUEUED', 'RUNNING', 'WAITING'].includes(row.status)).map(row => row.stepId));
-    let admitted = false;
-
-    for (const row of rows.filter(r => r.status === 'PENDING').sort((a, b) => (a.index ?? 0) - (b.index ?? 0))) {
-      // One forEach item at a time, in order; parallel fan-out comes in B4
-      if (row.index !== undefined) {
-        if (busy.has(row.stepId)) continue;
-        busy.add(row.stepId);
+  /** Asks for an admission pass; requests during one collapse into one more */
+  private admit(): Promise<void> {
+    if (this.admitting) {
+      this.admitting.again = true;
+      return this.admitting.promise;
+    }
+    const entry = { again: false, promise: Promise.resolve() };
+    entry.promise = (async () => {
+      try {
+        do {
+          entry.again = false;
+          await this.admitReady();
+        } while (entry.again);
+      } finally {
+        this.admitting = undefined;
       }
+    })();
+    this.admitting = entry;
+    return entry.promise;
+  }
+
+  /**
+   * Queues pending work as far as the limits allow, one row per run in turn, so
+   * freed slots are shared across runs however many items each one has.
+   * Backpressure: what does not fit stays PENDING instead of piling up in the queue.
+   */
+  private async admitReady(): Promise<void> {
+    const { store, queue, signals, options } = this.deps;
+    const pending = await store.listPending(options.runWindow);
+    if (!pending.length) return;
+
+    const inFlight = await store.countInFlight();
+    const byRun = new Map<string, number>();
+    const byStep = new Map<string, number>();
+    const byTask = new Map<string, number>();
+    const byWorkflow = new Map<string, number>();
+    const add = (map: Map<string, number>, key: string, count = 1) => map.set(key, (map.get(key) ?? 0) + count);
+    const count = (row: { runId: string; stepId: string; task: string; workflow?: string }, n?: number) => {
+      add(byRun, row.runId, n);
+      add(byStep, `${row.runId}:${row.stepId}`, n);
+      add(byTask, row.task, n);
+      if (row.workflow) add(byWorkflow, row.workflow, n);
+    };
+    inFlight.forEach(group => count(group, group.count));
+
+    const fits = (row: StepRun) =>
+      (byRun.get(row.runId) ?? 0) < options.runWindow &&
+      (row.stepLimit === undefined || (byStep.get(`${row.runId}:${row.stepId}`) ?? 0) < row.stepLimit) &&
+      (options.taskLimits[row.task] === undefined || (byTask.get(row.task) ?? 0) < options.taskLimits[row.task]) &&
+      (row.workflowLimit === undefined || (byWorkflow.get(row.workflow) ?? 0) < row.workflowLimit);
+
+    const queues = new Map<string, StepRun[]>();
+    for (const row of pending) queues.set(row.runId, [...(queues.get(row.runId) ?? []), row]);
+    const ids = [...queues.keys()].sort();
+    const first = this.rotation++ % ids.length;
+    const order = [...ids.slice(first), ...ids.slice(0, first)];
+
+    const admitted: StepRun[] = [];
+    for (let progressed = true; progressed; ) {
+      progressed = false;
+      for (const runId of order) {
+        const rows = queues.get(runId);
+        const next = rows.findIndex(fits);
+        if (next < 0) continue;
+        const [row] = rows.splice(next, 1);
+        count(row);
+        admitted.push(row);
+        progressed = true;
+      }
+    }
+
+    // The job goes first: enqueueing is idempotent, so a crash here only repeats it
+    for (const row of admitted) {
       await queue.enqueue({ id: row.id, runId: row.runId });
       await store.updateStepRun(row.id, { status: ['PENDING'] }, { status: 'QUEUED' });
-      admitted = true;
     }
-    if (admitted) signals.jobsAvailable();
+    if (admitted.length) signals.jobsAvailable();
   }
 
   /** Closes the run once every step has finished */

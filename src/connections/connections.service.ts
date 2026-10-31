@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import mongoose, { Schema } from 'mongoose';
-import { ConnectionLookup, HttpConnection } from '../tasks/task.interface';
+import { ConnectionLookup, HttpConnection, RateLimit } from '../tasks/task.interface';
 import { Sealed, SECRET_KEY_ENV, SecretBox } from './secret-box';
 
 export interface ConnectionInput {
@@ -8,6 +8,7 @@ export interface ConnectionInput {
   baseUrl: string;
   headers?: Record<string, string>;
   query?: Record<string, string>;
+  rateLimit?: RateLimit;
 }
 
 /** What the API shows: names of secret values, never the values */
@@ -17,6 +18,7 @@ export interface ConnectionSummary {
   baseUrl: string;
   headerNames: string[];
   queryNames: string[];
+  rateLimit?: RateLimit;
   updatedAt: Date;
 }
 
@@ -47,6 +49,7 @@ const ConnectionSchema = new Schema<ConnectionDocument>(
     baseUrl: { type: String, required: true },
     headerNames: [String],
     queryNames: [String],
+    rateLimit: { _id: false, type: { perSecond: Number, burst: Number } },
     secret: { keyId: String, iv: String, tag: String, data: String },
   },
   { timestamps: true }
@@ -65,6 +68,7 @@ const summarize = (doc: ConnectionDocument): ConnectionSummary => ({
   baseUrl: doc.baseUrl,
   headerNames: doc.headerNames,
   queryNames: doc.queryNames,
+  ...(doc.rateLimit ? { rateLimit: doc.rateLimit } : {}),
   updatedAt: doc.updatedAt,
 });
 
@@ -92,6 +96,8 @@ export class ConnectionsService implements ConnectionLookup {
         headerNames: Object.keys(headers),
         queryNames: Object.keys(query),
         secret: this.requireBox().seal({ headers, query }, contextFor(name)),
+        // Replacing a connection without a limit removes the one it had
+        ...(input.rateLimit ? { rateLimit: { ...input.rateLimit } } : { $unset: { rateLimit: 1 } }),
       },
       { upsert: true, new: true, lean: true }
     );
@@ -116,6 +122,6 @@ export class ConnectionsService implements ConnectionLookup {
       doc.secret,
       contextFor(name)
     );
-    return { name, type: doc.type, baseUrl: doc.baseUrl, headers, query };
+    return { name, type: doc.type, baseUrl: doc.baseUrl, headers, query, ...(doc.rateLimit ? { rateLimit: doc.rateLimit } : {}) };
   }
 }

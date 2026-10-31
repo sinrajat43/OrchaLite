@@ -266,10 +266,10 @@ decide what a persisted step record has to store.
   - Done when: a step that fails twice then succeeds produces its side effect
     exactly once.
 
-- [ ] **B4. Parallelism and backpressure**
+- [x] **B4. Parallelism and backpressure** (done 2026-10-31)
   - Build: independent steps run concurrently; `forEach` fans out across
-    workers; concurrency limits per workflow and per task; rate limiting per
-    connection.
+    workers; `concurrency` on a `forEach` step and on a workflow,
+    `ORCHALITE_TASK_LIMITS` per task, a window per run; `rateLimit` per connection.
   - Teaches: bounded concurrency, fairness, backpressure.
   - Done when: a 1,000-item fan-out respects a configured limit and one large
     run cannot starve others.
@@ -384,3 +384,8 @@ Several of these come back in later horizons, noted on each item.
 | 2026-10-31 | `DEAD_LETTERED` means a step meant to be retried ran out of attempts, or workers vanished 5 times holding it; a step with no policy that fails is just `FAILED` | Dead letters are the operator's list of work that might have succeeded. A crash does not use up a retry, but it cannot be unlimited: a step that kills its worker would loop forever |
 | 2026-10-31 | A task's own side effects use `ctx.idempotencyKey`: `http.request` (writes) and `notify.webhook` send it as `Idempotency-Key`, and `mongo.insert` derives `_id` from it | Only the receiver can make a repeat harmless, so the engine's job is to hand it a key that never changes across retries and redeliveries |
 | 2026-10-31 | A trigger's idempotency key is claimed through a unique index before the run is recorded, with a fingerprint of the request; reuse for something else is a `409`. Keys do not expire yet | A repeat that finds the key but no run finishes the job, so a crash between the two writes is safe |
+| 2026-10-31 | Limits are enforced by admission, when the scheduler moves a row from `PENDING` to `QUEUED`, not by workers refusing jobs | Work that does not fit stays out of the queue, which is backpressure at the source, and it works the same for any queue |
+| 2026-10-31 | Admission is one pass over all runs, taking one row per run in turn from a rotating start, with a window per run (16 by default) | A pass per run would hand each freed slot to whichever run just finished something, so a large run would keep them. The window keeps the queue short so a new run is never far from the front |
+| 2026-10-31 | A retry's backoff holds its slot, while a stored wait does not | Retries would otherwise all come back at once past the limit. A stored wait does no work, and cannot be admitted again |
+| 2026-10-31 | A workflow's `concurrency` limits steps in flight across its runs, not how many runs overlap | It is what the roadmap asked for. Limiting overlapping runs, with a policy for what happens to the extra ones, is still open |
+| 2026-10-31 | Connection rate limits use GCRA, one timestamp per connection updated atomically; a limited step gives up its slot and returns when a call is allowed, using no attempt | No counters to reset and no window-edge bursts. Nothing happened, so it is not a failure |

@@ -1,6 +1,7 @@
 import { Types } from 'mongoose';
 import { EngineSignals } from '../engine/engine-signals';
 import { InMemoryStepQueue } from '../engine/in-memory-step-queue';
+import { InMemoryRateLimiter, RateLimiter } from '../engine/rate-limiter';
 import { Scheduler } from '../engine/scheduler';
 import { Worker } from '../engine/worker';
 import { TaskLookup } from '../orchestrator/task-registry.service';
@@ -20,6 +21,7 @@ export interface RunOptions {
   store?: InMemoryRunStore;
   workerSlots?: number;
   leaseMs?: number;
+  limiter?: RateLimiter;
 }
 
 const noConnections: ConnectionLookup = {
@@ -41,13 +43,14 @@ export async function runWorkflow(definition: WorkflowDefinition, tasks: TaskLoo
   const signals = new EngineSignals();
   const runId = options.runId ?? new Types.ObjectId().toHexString();
 
-  const scheduler = new Scheduler({ store, queue, tasks, signals, options: { schedulerIntervalMs: 5 } });
+  const scheduler = new Scheduler({ store, queue, tasks, signals, options: { schedulerIntervalMs: 5, runWindow: 16, taskLimits: {} } });
   const worker = new Worker({
     store,
     queue,
     tasks,
     signals,
     connections: options.connections ?? noConnections,
+    limiter: options.limiter ?? new InMemoryRateLimiter(),
     createLogger: options.createLogger ?? (() => silentLogger),
     options: { leaseMs: options.leaseMs ?? 5000, workerSlots: options.workerSlots ?? 1, workerPollMs: 2, defaultStepTimeoutMs: 30_000, maxLostDeliveries: 5 },
   });

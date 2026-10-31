@@ -37,6 +37,11 @@ export class WorkflowStepDto {
   @IsInt()
   @Min(1)
   timeoutMs?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  concurrency?: number;
 }
 
 export const WORKFLOW_NAME = /^[A-Za-z0-9_.-]+$/;
@@ -49,6 +54,11 @@ export class WorkflowDefinitionDto {
   @IsOptional()
   @IsObject()
   input?: Record<string, any>;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  concurrency?: number;
 
   @IsArray()
   @ValidateNested({ each: true })

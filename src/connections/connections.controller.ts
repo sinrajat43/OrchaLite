@@ -1,10 +1,22 @@
 import {
   BadRequestException, Body, Controller, Delete, Get, HttpCode, NotFoundException, Param, Put, ServiceUnavailableException,
 } from '@nestjs/common';
-import { IsIn, IsObject, IsOptional, IsUrl, Matches } from 'class-validator';
+import { Type } from 'class-transformer';
+import { IsIn, IsInt, IsNumber, IsObject, IsOptional, IsUrl, Min, ValidateNested } from 'class-validator';
 import { ConnectionsDisabledError, ConnectionsService, ConnectionSummary } from './connections.service';
 
 export const CONNECTION_NAME = /^[A-Za-z0-9_.-]+$/;
+
+export class RateLimitDto {
+  @IsNumber()
+  @Min(0.001)
+  perSecond: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  burst?: number;
+}
 
 export class PutConnectionDto {
   @IsIn(['http'])
@@ -20,6 +32,11 @@ export class PutConnectionDto {
   @IsOptional()
   @IsObject()
   query?: Record<string, string>;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => RateLimitDto)
+  rateLimit?: RateLimitDto;
 }
 
 const disabledToHttp = (error: unknown) => {

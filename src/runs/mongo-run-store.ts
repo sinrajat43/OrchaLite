@@ -1,5 +1,5 @@
 import { Schema, model, models, Model } from 'mongoose';
-import { StepRun, StepRunExpectation, StepRunUpdateOptions } from '../engine/step-run';
+import { InFlightCount, StepRun, StepRunExpectation, StepRunUpdateOptions } from '../engine/step-run';
 import { DuplicateEventError, RunRequest, RunStore } from './run-store';
 import { RunEvent, RunQuery, RunSummary } from './run.types';
 
@@ -61,6 +61,9 @@ const StepRunSchema = new Schema(
     runId: { type: String, required: true },
     stepId: String,
     task: String,
+    workflow: String,
+    stepLimit: Number,
+    workflowLimit: Number,
     index: Number,
     item: Schema.Types.Mixed,
     fanOut: Boolean,
@@ -73,6 +76,7 @@ const StepRunSchema = new Schema(
     iterations: Number,
     notBefore: Date,
     resumed: Boolean,
+    yields: Number,
     failures: [{ _id: false, attempt: Number, error: String, at: Date }],
     startedAt: Date,
     endedAt: Date,
@@ -82,6 +86,7 @@ const StepRunSchema = new Schema(
 );
 StepRunSchema.index({ runId: 1, stepId: 1, index: 1 });
 StepRunSchema.index({ status: 1, _id: -1 });
+StepRunSchema.index({ status: 1, runId: 1 });
 
 // A key claims a run id once, through the unique _id; there is no expiry yet
 const RunRequestSchema = new Schema(
@@ -189,6 +194,27 @@ export class MongoRunStore implements RunStore {
     const inc = { version: 1, ...(options.takeFence ? { fence: 1 } : {}) };
     const row: any = await StepRunModel.findOneAndUpdate(filter, { $set: changes, $inc: inc }, { new: true, lean: true });
     return row ? toRow(row) : null;
+  }
+
+  async listPending(perRun: number): Promise<StepRun[]> {
+    const runIds: string[] = await StepRunModel.distinct('runId', { status: 'PENDING' });
+    const lists = await Promise.all(
+      runIds.map(runId => StepRunModel.find({ runId, status: 'PENDING' }, { output: 0, item: 0 }).sort({ index: 1 }).limit(perRun).lean())
+    );
+    return lists.flat().map(toRow);
+  }
+
+  async countInFlight(): Promise<InFlightCount[]> {
+    const groups = await StepRunModel.aggregate([
+      {
+        $match: {
+          fanOut: { $ne: true },
+          $or: [{ status: { $in: ['QUEUED', 'RUNNING'] } }, { status: 'WAITING', resumed: { $ne: true } }],
+        },
+      },
+      { $group: { _id: { runId: '$runId', stepId: '$stepId', task: '$task', workflow: '$workflow' }, count: { $sum: 1 } } },
+    ]);
+    return groups.map(({ _id, count }) => ({ ..._id, count }));
   }
 
   async listDeadLetters(limit: number): Promise<StepRun[]> {

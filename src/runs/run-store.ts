@@ -1,4 +1,4 @@
-import { StepRun, StepRunExpectation, StepRunUpdateOptions } from '../engine/step-run';
+import { InFlightCount, StepRun, StepRunExpectation, StepRunUpdateOptions } from '../engine/step-run';
 import { RunEvent, RunQuery, RunSummary } from './run.types';
 
 /** Nest injection token for the RunStore */
@@ -40,6 +40,14 @@ export interface RunStore {
    * @returns the updated row, or null if the expectation failed and nothing changed
    */
   updateStepRun(id: string, expected: StepRunExpectation, changes: Partial<StepRun>, options?: StepRunUpdateOptions): Promise<StepRun | null>;
+  /** PENDING rows, up to perRun of each run with any, lowest forEach index first, without outputs */
+  listPending(perRun: number): Promise<StepRun[]>;
+  /**
+   * What holds a slot: rows queued, running, or backing off before a retry. A
+   * stored wait holds none, since it uses no worker. A forEach step's own row
+   * does no work, so it does not count.
+   */
+  countInFlight(): Promise<InFlightCount[]>;
   /** Newest first, without outputs */
   listDeadLetters(limit: number): Promise<StepRun[]>;
   /**

@@ -1,4 +1,4 @@
-import { StepRun, StepRunExpectation, StepRunUpdateOptions } from '../engine/step-run';
+import { InFlightCount, StepRun, StepRunExpectation, StepRunUpdateOptions } from '../engine/step-run';
 import { DuplicateEventError, RunRequest, RunStore } from './run-store';
 import { RunEvent, RunQuery, RunSummary } from './run.types';
 
@@ -83,6 +83,30 @@ export class InMemoryRunStore implements RunStore {
     if (expected.fence !== undefined && expected.fence !== row.fence) return null;
     Object.assign(row, structuredClone(changes), { version: row.version + 1, fence: row.fence + (options.takeFence ? 1 : 0) });
     return structuredClone(row);
+  }
+
+  async listPending(perRun: number): Promise<StepRun[]> {
+    const pending = [...this.stepRuns.values()].filter(row => row.status === 'PENDING').sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+    const taken = new Map<string, number>();
+    return pending
+      .filter(row => {
+        taken.set(row.runId, (taken.get(row.runId) ?? 0) + 1);
+        return taken.get(row.runId) <= perRun;
+      })
+      .map(({ output, item, ...row }) => structuredClone(row));
+  }
+
+  async countInFlight(): Promise<InFlightCount[]> {
+    const groups = new Map<string, InFlightCount>();
+    for (const row of this.stepRuns.values()) {
+      const holdsSlot = ['QUEUED', 'RUNNING'].includes(row.status) || (row.status === 'WAITING' && !row.resumed);
+      if (row.fanOut || !holdsSlot) continue;
+      const key = JSON.stringify([row.runId, row.stepId, row.task, row.workflow]);
+      const group = groups.get(key) ?? { runId: row.runId, stepId: row.stepId, task: row.task, workflow: row.workflow, count: 0 };
+      group.count++;
+      groups.set(key, group);
+    }
+    return [...groups.values()];
   }
 
   async listDeadLetters(limit: number): Promise<StepRun[]> {

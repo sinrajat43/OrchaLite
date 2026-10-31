@@ -8,10 +8,11 @@ import { RetryPolicy } from '../orchestrator/workflow-definition';
 import { appendRunEvent } from '../runs/run-recorder';
 import { RunStore } from '../runs/run-store';
 import { RunSummary } from '../runs/run.types';
-import { ConnectionLookup, SuspendTask, TaskLogger, TerminalTaskError } from '../tasks/task.interface';
+import { ConnectionLookup, HttpConnection, SuspendTask, TaskLogger, TerminalTaskError } from '../tasks/task.interface';
 import { CompiledRuns } from './compiled-runs';
 import { EngineOptions } from './engine-options';
 import { EngineSignals } from './engine-signals';
+import { RateLimited, RateLimiter } from './rate-limiter';
 import { Claim, StepQueue } from './step-queue';
 import { isFinished, StepRun } from './step-run';
 
@@ -20,6 +21,7 @@ export interface WorkerDeps {
   queue: StepQueue;
   tasks: TaskLookup;
   connections: ConnectionLookup;
+  limiter: RateLimiter;
   signals: EngineSignals;
   options: Pick<EngineOptions, 'leaseMs' | 'workerSlots' | 'workerPollMs' | 'defaultStepTimeoutMs' | 'maxLostDeliveries'>;
   /** Builds the logger handed to a step; defaults to a Nest Logger */
@@ -125,8 +127,8 @@ export class Worker {
     // A worker died after asking to wait but before releasing the job
     if (row.notBefore && new Date(row.notBefore).getTime() > Date.now()) return queue.release(claim, new Date(row.notBefore));
 
-    // Every take of a row is either a failure on record, a wake-up from a wait, or a worker that vanished
-    const lost = row.fence - (row.failures?.length ?? 0) - (row.resumed ? 1 : 0);
+    // Every take of a row ended in a failure on record, a yield, or a worker that vanished
+    const lost = row.fence - (row.failures?.length ?? 0) - (row.yields ?? 0);
     if (lost >= options.maxLostDeliveries) {
       const error = `Gave up after ${lost} deliveries in which the worker disappeared; the step may be crashing its worker`;
       const buried = await store.updateStepRun(row.id, { fence: row.fence }, { status: 'DEAD_LETTERED', error, endedAt: new Date() });
@@ -158,9 +160,18 @@ export class Worker {
       }
       if (error instanceof SuspendTask) {
         const notBefore = new Date(Date.now() + error.ms);
-        const waiting = await store.updateStepRun(row.id, { fence: taken.fence }, { status: 'WAITING', notBefore, resumed: true });
+        const yields = (taken.yields ?? 0) + 1;
+        const waiting = await store.updateStepRun(row.id, { fence: taken.fence }, { status: 'WAITING', notBefore, resumed: true, yields });
         if (waiting) await queue.release(claim, notBefore);
         signals.runChanged(row.runId);
+        return;
+      }
+      if (error instanceof RateLimited) {
+        // Not a failure: nothing happened yet, so it comes back when a call is allowed
+        const notBefore = new Date(Date.now() + error.waitMs);
+        const yields = (taken.yields ?? 0) + 1;
+        const waiting = await store.updateStepRun(row.id, { fence: taken.fence }, { status: 'WAITING', notBefore, yields });
+        if (waiting) await queue.release(claim, notBefore);
         return;
       }
       if (!(error instanceof StepFailure)) throw error;
@@ -211,6 +222,28 @@ export class Worker {
     return null;
   }
 
+  /**
+   * Connections as a task sees them: using one spends a call from its rate
+   * limit, once per execution however often the task looks it up
+   */
+  private limitedConnections(): ConnectionLookup {
+    const { connections, limiter } = this.deps;
+    const spent = new Map<string, HttpConnection>();
+    return {
+      get: async name => {
+        if (spent.has(name)) return spent.get(name);
+        const connection = await connections.get(name);
+        if (connection.rateLimit) {
+          const { perSecond, burst = 1 } = connection.rateLimit;
+          const waitMs = await limiter.acquire(`connection:${name}`, perSecond, burst);
+          if (waitMs > 0) throw new RateLimited(waitMs);
+        }
+        spent.set(name, connection);
+        return connection;
+      },
+    };
+  }
+
   /** Renews the lease while the task runs, and aborts the task if it is lost */
   private heartbeat(claim: Claim, abort: AbortController): () => void {
     const { queue, options } = this.deps;
@@ -231,9 +264,10 @@ export class Worker {
    * @throws StepFailure if the step failed
    * @throws LeaseLost if this worker no longer holds the step
    * @throws SuspendTask if the task asked to wait
+   * @throws RateLimited if a connection it uses is out of calls for now
    */
   private async outcome(row: StepRun, abort: AbortController): Promise<Partial<StepRun>> {
-    const { store, tasks, connections, options } = this.deps;
+    const { store, tasks, options } = this.deps;
     const label = row.index === undefined ? '' : ` [item ${row.index}]`;
 
     const run: RunSummary | null = await store.getRun(row.runId);
@@ -286,12 +320,12 @@ export class Worker {
         attempt: (row.failures?.length ?? 0) + 1,
         idempotencyKey: row.id,
         logger: createLogger(`${row.task} run=${row.runId} step=${row.stepId}${label}`),
-        connections,
+        connections: this.limitedConnections(),
         resumed: row.resumed === true,
       });
       output = await Promise.race([running, aborted]);
     } catch (error) {
-      if (error instanceof SuspendTask || error instanceof LeaseLost) throw error;
+      if (error instanceof SuspendTask || error instanceof LeaseLost || error instanceof RateLimited) throw error;
       // The abort reason wins over whatever the aborted task threw, usually "canceled"
       if (abort.signal.reason instanceof LeaseLost) throw abort.signal.reason;
       const message = `Task execution failed${label}: ${(error as Error)?.message ?? error}`;

@@ -61,7 +61,7 @@ export interface RunSummary {
   endedAt?: Date;
   durationMs?: number;
   /** Snapshot of the workflow as it ran */
-  definition: { name: string; input?: Record<string, unknown>; steps: any[] };
+  definition: { name: string; input?: Record<string, unknown>; concurrency?: number; steps: any[] };
   /** Run input, with defaults filled in */
   input?: Record<string, unknown>;
   /** Set when the run came from a stored workflow */

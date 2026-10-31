@@ -11,6 +11,14 @@ export interface HttpConnection {
   baseUrl: string;
   headers: Record<string, string>;
   query: Record<string, string>;
+  rateLimit?: RateLimit;
+}
+
+/** How fast steps may use a connection, across every run and worker */
+export interface RateLimit {
+  perSecond: number;
+  /** Calls allowed at once after an idle spell; 1 by default */
+  burst?: number;
 }
 
 export interface ConnectionLookup {

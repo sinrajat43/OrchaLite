@@ -5,6 +5,7 @@ import { RUN_STORE, RunStore } from '../runs/run-store';
 import { appendRunEvent } from '../runs/run-recorder';
 import { ENGINE_OPTIONS, EngineOptions } from './engine-options';
 import { EngineSignals } from './engine-signals';
+import { RATE_LIMITER, RateLimiter } from './rate-limiter';
 import { Scheduler } from './scheduler';
 import { STEP_QUEUE, StepQueue } from './step-queue';
 import { Worker } from './worker';
@@ -21,6 +22,7 @@ export class EngineService implements OnApplicationBootstrap, BeforeApplicationS
   constructor(
     @Inject(RUN_STORE) private readonly store: RunStore,
     @Inject(STEP_QUEUE) private readonly queue: StepQueue,
+    @Inject(RATE_LIMITER) private readonly limiter: RateLimiter,
     @Inject(ENGINE_OPTIONS) private readonly options: EngineOptions,
     private readonly tasks: TaskRegistry,
     private readonly connections: ConnectionsService,
@@ -28,14 +30,14 @@ export class EngineService implements OnApplicationBootstrap, BeforeApplicationS
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
-    const { store, queue, tasks, connections, signals, options } = this;
+    const { store, queue, limiter, tasks, connections, signals, options } = this;
     if (options.roles.includes('scheduler')) {
       await this.abandonLegacyRuns();
       this.scheduler = new Scheduler({ store, queue, tasks, signals, options });
       this.scheduler.start();
     }
     if (options.roles.includes('worker')) {
-      this.worker = new Worker({ store, queue, tasks, connections, signals, options });
+      this.worker = new Worker({ store, queue, tasks, connections, limiter, signals, options });
       this.worker.start();
     }
   }
