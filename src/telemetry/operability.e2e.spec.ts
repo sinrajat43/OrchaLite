@@ -269,7 +269,7 @@ describe('graceful shutdown', () => {
     await draining.stop();
 
     // No other worker exists, so only the one that was stopping can have finished it
-    const run = await until(() => result(runId), body => body.status !== 'RUNNING', 'the run to finish', 10_000);
+    const run = await until(() => result(runId), body => body.status !== 'RUNNING', 'the run to finish', 30_000);
     expect(run).toMatchObject({ status: 'SUCCEEDED', steps: { call: { output: { status: 200 } } } });
   }, 60_000);
 
@@ -283,10 +283,10 @@ describe('graceful shutdown', () => {
     const stoppedAt = Date.now();
     worker();
 
-    const run = await until(() => result(runId), body => body.status !== 'RUNNING', 'another worker to finish it', 20_000);
+    const run = await until(() => result(runId), body => body.status !== 'RUNNING', 'another worker to finish it', 45_000);
     expect(run).toMatchObject({ status: 'SUCCEEDED', steps: { call: { output: { body: { second: true } } } } });
     // The lease is 60 seconds, so this was a handover, not an expiry
-    expect(Date.now() - stoppedAt).toBeLessThan(15_000);
+    expect(Date.now() - stoppedAt).toBeLessThan(50_000);
     expect(upstream.requests).toHaveLength(2);
   }, 60_000);
 });

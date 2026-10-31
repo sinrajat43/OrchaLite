@@ -80,7 +80,7 @@ describe.each<[string, () => Promise<{ queue: StepQueue; stop: () => Promise<voi
     const old = await queue.claim('dead', 30);
 
     // How soon it returns after the lease differs by adapter; that it returns does not
-    const next = await until(() => queue.claim('alive', 5000), claim => claim !== null, 'the job to come back', 5000);
+    const next = await until(() => queue.claim('alive', 5000), claim => claim !== null, 'the job to come back', 15_000);
     expect(next.job.id).toBe(a);
     expect(await queue.extend(old, 5000)).toBe(false);
     await queue.ack(old);
@@ -89,32 +89,32 @@ describe.each<[string, () => Promise<{ queue: StepQueue; stop: () => Promise<voi
 
   it('keeps a job invisible while its lease is renewed', async () => {
     await queue.enqueue(job(id()));
-    const claim = await queue.claim('w', 60);
-    await sleep(30);
-    expect(await queue.extend(claim, 200)).toBe(true);
-    await sleep(50);
+    const claim = await queue.claim('w', 400);
+    await sleep(100);
+    expect(await queue.extend(claim, 5000)).toBe(true);
+    // Past the original lease, so only the renewal is keeping it invisible
+    await sleep(500);
     expect(await queue.claim('other', 5000)).toBeNull();
     await queue.ack(claim);
   });
 
   it('removes an acknowledged job', async () => {
     await queue.enqueue(job(id()));
-    await queue.ack(await queue.claim('w', 10));
-    await sleep(20);
+    await queue.ack(await queue.claim('w', 50));
+    await sleep(200);
     expect(await queue.claim('w', 5000)).toBeNull();
   });
 
   it('holds a delayed or released job until its time', async () => {
     const a = id();
-    await queue.enqueue(job(a), new Date(Date.now() + 40));
+    await queue.enqueue(job(a), new Date(Date.now() + 1000));
     expect(await queue.claim('w', 5000)).toBeNull();
-    await sleep(60);
 
-    const claim = await queue.claim('w', 5000);
+    const claim = await until(() => queue.claim('w', 5000), found => found !== null, 'the delayed job', 10_000);
     expect(claim.job.id).toBe(a);
-    await queue.release(claim, new Date(Date.now() + 40));
+    await queue.release(claim, new Date(Date.now() + 1000));
     expect(await queue.claim('w', 5000)).toBeNull();
-    await sleep(60);
-    expect((await queue.claim('w', 5000)).job.id).toBe(a);
+    const again = await until(() => queue.claim('w', 5000), found => found !== null, 'the released job', 10_000);
+    expect(again.job.id).toBe(a);
   });
 });

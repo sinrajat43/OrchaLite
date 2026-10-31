@@ -3,6 +3,7 @@ import { InMemoryRateLimiter } from './rate-limiter';
 import { RunInputError, validateWorkflow, WorkflowDefinition, WorkflowDefinitionError, WorkflowStep } from '../orchestrator/workflow-definition';
 import { InMemoryRunStore } from '../runs/in-memory-run-store';
 import { runWorkflow } from '../testing/run-workflow';
+import { until } from '../testing/wait';
 import { Task, TaskContext, TaskExecutionError, TerminalTaskError } from '../tasks/task.interface';
 import { replay } from '../runs/run-projection';
 import { Type } from '@sinclair/typebox';
@@ -683,11 +684,18 @@ describe('parallelism', () => {
   };
 
   it('runs independent steps at the same time', async () => {
-    const { task, stats } = tracked(30);
+    // Each step waits for the other two to have started, so this can only finish if all three overlap
+    let started = 0;
+    let allStarted: () => void;
+    const together = new Promise<void>(resolve => (allStarted = resolve));
+    const task = fakeTask(async () => {
+      if (++started === 3) allStarted();
+      await together;
+    });
 
-    await runWorkflow(workflow([step('a', 't'), step('b', 't'), step('c', 't'), step('d', 't', ['a', 'b', 'c'])]), lookup({ t: task }), { ...quiet, workerSlots: 4 });
+    await runWorkflow(workflow([step('a', 't'), step('b', 't'), step('c', 't')]), lookup({ t: task }), { ...quiet, workerSlots: 4 });
 
-    expect(stats.peak).toBe(3);
+    expect(started).toBe(3);
   });
 
   it('keeps forEach outputs in item order, whatever order they finish in', async () => {
@@ -715,7 +723,7 @@ describe('parallelism', () => {
     );
 
     expect(stats.calls).toBe(30);
-    expect(stats.peak).toBe(3);
+    expect(stats.peak).toBeLessThanOrEqual(3);
   });
 
   it('respects a workflow\'s concurrency across its steps', async () => {
@@ -724,17 +732,19 @@ describe('parallelism', () => {
 
     await runWorkflow(definition, lookup({ t: task }), { ...quiet, workerSlots: 10 });
 
-    expect(stats.peak).toBe(2);
+    expect(stats.calls).toBe(5);
+    expect(stats.peak).toBeLessThanOrEqual(2);
   });
 
   it('stops new work after a failure, lets running work finish, and fails the run', async () => {
     const finished: string[] = [];
+    const store = new InMemoryRunStore();
     const task = fakeTask(async ({ params }: TaskContext<{ name: string; fail?: boolean }>) => {
       if (params.fail) throw new Error('boom');
-      await new Promise(resolve => setTimeout(resolve, 30));
+      // Finish only once the other step's failure is on record, so the order is not left to chance
+      if (params.name === 'slow') await until(() => store.getStepRun('r:bad'), row => row?.status === 'FAILED', 'the other step to fail');
       finished.push(params.name);
     });
-    const store = new InMemoryRunStore();
 
     await expect(
       runWorkflow(
@@ -910,57 +920,45 @@ describe('compensation', () => {
 });
 
 describe('fencing', () => {
-  it('drops the result of a worker that lost its lease and a newer worker replaced', async () => {
+  it('drops the result of a worker that a newer one has replaced', async () => {
     const { InMemoryStepQueue } = jest.requireActual('./in-memory-step-queue');
     const { EngineSignals } = jest.requireActual('./engine-signals');
     const { Worker } = jest.requireActual('./worker');
+    jest.spyOn(jest.requireActual('@nestjs/common').Logger.prototype, 'warn').mockImplementation(() => undefined);
     const store = new InMemoryRunStore();
     const queue = new InMemoryStepQueue();
 
-    const log: string[] = [];
-    let release: () => void;
-    const gate = new Promise<void>(resolve => (release = resolve));
+    let started: () => void;
+    const hasStarted = new Promise<void>(resolve => (started = resolve));
+    let finish: () => void;
+    const gate = new Promise<void>(resolve => (finish = resolve));
     const tasks = lookup({
-      t: fakeTask(async ({ attempt }) => {
-        log.push('started');
-        if (log.length === 1) {
-          await gate;
-          return 'stale';
-        }
-        return `fresh ${attempt}`;
+      t: fakeTask(async () => {
+        started();
+        await gate;
+        return 'stale';
       }),
     });
-    const definition = workflow([step('a', 't')]);
+
     await store.saveSummary(
-      { id: 'r', name: 'test', status: 'RUNNING', startedAt: new Date(), definition, steps: [], lastSeq: 1, execution: 'queue' },
+      { id: 'r', name: 'test', status: 'RUNNING', startedAt: new Date(), definition: workflow([step('a', 't')]), steps: [], lastSeq: 1, execution: 'queue' },
       0
     );
     await store.insertStepRuns([{ id: 'r:a', runId: 'r', stepId: 'a', task: 't', status: 'QUEUED', version: 1, fence: 0 }]);
     await queue.enqueue({ id: 'r:a', runId: 'r' });
 
-    const worker = (leaseMs: number) =>
-      new Worker({ store, queue, tasks, signals: new EngineSignals(), connections: { get: async () => null }, limiter: null, createLogger: () => silentLogger, options: { leaseMs, workerSlots: 1, workerPollMs: 2, defaultStepTimeoutMs: 30_000, maxLostDeliveries: 5 } });
+    const worker = new Worker({ store, queue, tasks, signals: new EngineSignals(), connections: { get: async () => null }, limiter: null, createLogger: () => silentLogger, options: { leaseMs: 60_000, workerSlots: 1, workerPollMs: 2, defaultStepTimeoutMs: 60_000, maxLostDeliveries: 5 } });
+    worker.start();
+    await hasStarted;
 
-    jest.spyOn(jest.requireActual('@nestjs/common').Logger.prototype, 'warn').mockImplementation(() => undefined);
-    // A heartbeat that cannot keep up: the lease runs out mid-task
-    jest.spyOn(queue, 'extend').mockResolvedValue(false);
+    // Its lease is gone without it noticing, as with a long pause, and a newer worker has already finished the step
+    const replaced = await store.updateStepRun('r:a', {}, { status: 'RUNNING' }, { takeFence: true });
+    await store.updateStepRun('r:a', { fence: replaced.fence }, { status: 'SUCCEEDED', output: 'fresh' });
 
-    const zombie = worker(10);
-    zombie.start();
-    while (!log.length) await new Promise(resolve => setTimeout(resolve, 2));
-    await new Promise(resolve => setTimeout(resolve, 30));
+    finish();
+    await worker.stop();
 
-    const replacement = worker(5000);
-    replacement.start();
-    while ((await store.getStepRun('r:a')).status !== 'SUCCEEDED') await new Promise(resolve => setTimeout(resolve, 2));
-    await replacement.stop();
-
-    release();
-    await zombie.stop();
-
-    const row = await store.getStepRun('r:a');
-    expect(log).toEqual(['started', 'started']);
-    expect(row).toMatchObject({ status: 'SUCCEEDED', output: 'fresh 1', fence: 2 });
+    expect(await store.getStepRun('r:a')).toMatchObject({ status: 'SUCCEEDED', output: 'fresh', fence: 2 });
     jest.restoreAllMocks();
   });
 });

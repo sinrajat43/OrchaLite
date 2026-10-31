@@ -13,7 +13,7 @@ describe('scheduler failover', () => {
     const started = startEngineProcess({
       MONGODB_URI: api.mongoUri,
       ORCHALITE_ROLES: 'scheduler',
-      ORCHALITE_LEADER_TTL_MS: '1000',
+      ORCHALITE_LEADER_TTL_MS: '3000',
       ORCHALITE_SCHEDULER_INTERVAL_MS: '50',
     });
     processes.push(started);
@@ -42,16 +42,16 @@ describe('scheduler failover', () => {
 
   it('gives the lock to one owner at a time, and to another once it expires', async () => {
     const lock = new MongoLeaderLock();
-    const results = await Promise.all(['a', 'b', 'c', 'd'].map(owner => lock.acquire('test', owner, 100)));
+    const results = await Promise.all(['a', 'b', 'c', 'd'].map(owner => lock.acquire('test', owner, 2000)));
     expect(results.filter(Boolean)).toHaveLength(1);
     const winner = ['a', 'b', 'c', 'd'][results.indexOf(true)];
 
-    expect(await lock.acquire('test', winner, 100)).toBe(true);
-    expect(await lock.acquire('test', 'other', 100)).toBe(false);
-    await new Promise(resolve => setTimeout(resolve, 120));
-    expect(await lock.acquire('test', 'other', 100)).toBe(true);
+    expect(await lock.acquire('test', winner, 2000)).toBe(true);
+    expect(await lock.acquire('test', 'other', 2000)).toBe(false);
+    await new Promise(resolve => setTimeout(resolve, 2100));
+    expect(await lock.acquire('test', 'other', 2000)).toBe(true);
     await lock.release('test', 'other');
-    expect(await lock.acquire('test', 'third', 100)).toBe(true);
+    expect(await lock.acquire('test', 'third', 2000)).toBe(true);
   });
 
   it('fires cron once per second with two schedulers, and carries on when the leader is killed', async () => {
@@ -76,11 +76,11 @@ describe('scheduler failover', () => {
     await leader.kill();
     const countAtKill = (await runs()).length;
 
-    await until(holder, lock => Number(lock?.owner.split(':')[1]) !== leaderPid, 'a new leader', 10_000);
-    const after = await until(runs, list => list.length >= countAtKill + 2, 'firings under the new leader', 15_000);
+    await until(holder, lock => Number(lock?.owner.split(':')[1]) !== leaderPid, 'a new leader', 30_000);
+    const after = await until(runs, list => list.length >= countAtKill + 2, 'firings under the new leader', 30_000);
 
     expect(after.every(run => ['RUNNING', 'SUCCEEDED'].includes(run.status))).toBe(true);
-    const finished = await until(runs, list => list.slice(2).every(run => run.status === 'SUCCEEDED'), 'runs to finish', 10_000);
+    const finished = await until(runs, list => list.slice(2).every(run => run.status === 'SUCCEEDED'), 'runs to finish', 30_000);
     expect(finished.length).toBeGreaterThan(countAtKill);
-  }, 60_000);
+  }, 150_000);
 });

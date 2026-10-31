@@ -21,7 +21,7 @@ import { until } from '../testing/wait';
       REDIS_URL: redis.url,
       ORCHALITE_QUEUE: 'bullmq',
       ORCHALITE_ROLES: 'worker',
-      ORCHALITE_LEASE_MS: '1000',
+      ORCHALITE_LEASE_MS: '3000',
       ORCHALITE_STALLED_INTERVAL_MS: '200',
       ORCHALITE_WORKER_POLL_MS: '50',
     });

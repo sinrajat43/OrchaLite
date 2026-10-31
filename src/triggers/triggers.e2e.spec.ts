@@ -238,7 +238,7 @@ describe('webhook automation with rollback', () => {
         async () => (await api.request('GET', '/runs?name=tick&limit=100')).body,
         (list: any[]) => list.length >= 3,
         'three firings',
-        15_000
+        30_000
       );
       await api.request('DELETE', '/triggers/every-second');
 
@@ -247,7 +247,7 @@ describe('webhook automation with rollback', () => {
       const requests = await mongoose.connection.db.collection('run_requests').find({ _id: { $regex: '^cron:every-second:' } as any }).toArray();
       expect(new Set(requests.map(r => r.runId)).size).toBe(requests.length);
       expect(requests.length).toBeGreaterThanOrEqual(3);
-    }, 20_000);
+    }, 60_000);
   });
 
   it('publishes every event through the outbox, in order within a run', async () => {

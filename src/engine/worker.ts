@@ -287,12 +287,13 @@ export class Worker {
     const failures = [...(row.failures ?? []), { attempt, error: failure.message, at: new Date() }];
     const waiting = await store.updateStepRun(row.id, { fence: row.fence }, { status: 'WAITING', notBefore, failures, resumed: false });
     if (!waiting) return null;
-    await queue.release(claim, notBefore);
-    signals.runChanged(row.runId);
-    // Only informs; the row already holds the truth, so losing this event loses nothing
+    // Only informs; the row already holds the truth, so losing this event loses nothing.
+    // It goes before the release, or the next attempt could report ahead of this one
     await appendRunEvent(store, row.runId, 'StepRetryScheduled', { stepId: row.stepId, index: row.index, attempt, error: failure.message, retryAt: notBefore }).catch(error =>
       this.logger.warn(`Worker ${this.id}: could not record a retry of ${row.id}: ${error.message}`)
     );
+    await queue.release(claim, notBefore);
+    signals.runChanged(row.runId);
     return null;
   }
 

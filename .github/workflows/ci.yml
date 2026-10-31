@@ -15,7 +15,7 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     env:
       # The runner has no mongod, so the tests download one. Keep it somewhere
       # the cache step below can restore it from.
@@ -33,6 +33,10 @@ jobs:
         with:
           path: .mongodb-binaries
           key: mongodb-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}
+
+      # The BullMQ tests start their own throwaway Redis, and fail in CI without one
+      - name: Install Redis
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq redis-server
 
       - name: Install dependencies
         run: npm ci

@@ -4,6 +4,7 @@ import { NestExpressApplication } from '@nestjs/platform-express';
 import { Type } from '@sinclair/typebox';
 import { configureApp } from '../app.setup';
 import { closeApp } from '../testing/http-server';
+import { until } from '../testing/wait';
 import { Task, TaskContext } from '../tasks/task.interface';
 import { TaskHandler } from '../tasks/task-handler.decorator';
 import { WorkflowModule } from './workflow.module';
@@ -153,11 +154,7 @@ describe('HTTP API', () => {
     expect(during.status).toBe('RUNNING');
 
     finish('done');
-    let result = during;
-    for (let i = 0; i < 200 && result.status === 'RUNNING'; i++) {
-      await new Promise(resolve => setTimeout(resolve, 10));
-      result = await (await fetch(`${baseUrl}/runs/${accepted.runId}/result`)).json();
-    }
+    const result = await until(() => fetch(`${baseUrl}/runs/${accepted.runId}/result`).then(r => r.json()), body => body.status !== 'RUNNING', 'the run to finish');
     expect(result).toEqual({ runId: accepted.runId, status: 'SUCCEEDED', steps: { slow: { status: 'succeeded', output: 'done' } } });
   });
 

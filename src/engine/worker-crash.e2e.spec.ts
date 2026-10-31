@@ -13,7 +13,7 @@ describe('worker crash', () => {
   let hang = true;
 
   const worker = () => {
-    const started = startEngineProcess({ MONGODB_URI: api.mongoUri, ORCHALITE_ROLES: 'worker', ORCHALITE_LEASE_MS: '1000', ORCHALITE_WORKER_POLL_MS: '50' });
+    const started = startEngineProcess({ MONGODB_URI: api.mongoUri, ORCHALITE_ROLES: 'worker', ORCHALITE_LEASE_MS: '3000', ORCHALITE_WORKER_POLL_MS: '50' });
     processes.push(started);
     return started;
   };

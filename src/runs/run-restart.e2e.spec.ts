@@ -1,4 +1,5 @@
 import { startTestApi, TestApi } from '../testing/api-app';
+import { until } from '../testing/wait';
 
 describe('run history across a restart', () => {
   let api: TestApi;
@@ -29,12 +30,7 @@ describe('run history across a restart', () => {
     expect(accepted.status).toBe(202);
     const { runId } = accepted.body;
 
-    let before: any;
-    for (let i = 0; i < 500; i++) {
-      before = await api.request('GET', `/runs/${runId}/result`);
-      if (before.body.status !== 'RUNNING') break;
-      await new Promise(resolve => setTimeout(resolve, 10));
-    }
+    const before = await until(() => api.request('GET', `/runs/${runId}/result`), result => result.body.status !== 'RUNNING', 'the run to finish');
     expect(before.body.status).toBe('SUCCEEDED');
     const eventsBefore = (await api.request('GET', `/runs/${runId}/events`)).body;
 
