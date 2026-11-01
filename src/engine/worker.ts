@@ -267,6 +267,9 @@ export class Worker {
    * @returns how to end the step, or null if it will be tried again
    */
   private async afterFailure(row: StepRun, claim: Claim, failure: StepFailure): Promise<Partial<StepRun> | null> {
+    // First, because the failure can be that the run is gone or its definition no longer compiles
+    if (!failure.retryable) return { status: 'FAILED', error: failure.message };
+
     const { store, queue, signals } = this.deps;
     const run = await store.getRun(row.runId);
     const step = this.compiled.steps(run).get(row.stepId)?.step;
@@ -274,7 +277,6 @@ export class Worker {
     const maxAttempts = policy?.maxAttempts ?? 1;
     const attempt = (row.failures?.length ?? 0) + 1;
 
-    if (!failure.retryable) return { status: 'FAILED', error: failure.message };
     if (attempt >= maxAttempts) {
       // Only a step that was meant to be retried ran out of tries; otherwise it simply failed
       return maxAttempts > 1

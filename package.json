@@ -11,7 +11,8 @@
     "start:prod": "node dist/main",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
     "test": "jest",
-    "test:watch": "jest --watch"
+    "test:watch": "jest --watch",
+    "test:cov": "jest --coverage"
   },
   "keywords": [],
   "author": "",
@@ -53,6 +54,23 @@
     "testEnvironment": "node",
     "rootDir": "src",
     "testRegex": ".*\\.spec\\.ts$",
-    "testTimeout": 60000
+    "testTimeout": 60000,
+    "collectCoverageFrom": [
+      "**/*.ts",
+      "!**/*.spec.ts",
+      "!**/*.d.ts",
+      "!testing/**",
+      "!main.ts",
+      "!app.module.ts"
+    ],
+    "coverageDirectory": "../coverage",
+    "coverageThreshold": {
+      "global": {
+        "statements": 94,
+        "branches": 86,
+        "functions": 95,
+        "lines": 96
+      }
+    }
   }
 }

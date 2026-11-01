@@ -426,6 +426,12 @@ using the `mongod` on the PATH when there is one. BullMQ tests start a throwaway
 `redis-server` on a free port, and are skipped if there is none on the PATH,
 except in CI, where that is a failure.
 
+`npm run test:cov` also measures coverage and fails below the thresholds in
+`package.json`, which is what CI runs. It counts every source file, tested or
+not, except `main.ts` and `app.module.ts`, which only run in the spawned
+processes of the end-to-end tests, where coverage is not collected. Raise the
+thresholds as coverage grows, and cover new code rather than lowering them.
+
 ## Adding New Tasks
 
 1. Create a task class in `src/tasks/`: implement `Task`, describe its params

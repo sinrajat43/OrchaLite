@@ -117,4 +117,23 @@ describe.each<[string, () => Promise<{ queue: StepQueue; stop: () => Promise<voi
     const again = await until(() => queue.claim('w', 5000), found => found !== null, 'the released job', 10_000);
     expect(again.job.id).toBe(a);
   });
+
+  // Last, because its delayed job would surface in a later test
+  it('reports how many jobs are ready, delayed and leased', async () => {
+    // Earlier tests leave jobs leased, and those come back once their leases run out
+    const empty = async () => {
+      await drain();
+      return queue.depth();
+    };
+    await until(empty, ({ ready, delayed, leased }) => ready + delayed + leased === 0, 'the queue to empty', 20_000);
+
+    const [ready, delayed, leased] = [id(), id(), id()];
+    await queue.enqueue(job(leased));
+    const claim = await queue.claim('w', 60_000);
+    await queue.enqueue(job(delayed), new Date(Date.now() + 60_000));
+    await queue.enqueue(job(ready));
+
+    expect(claim.job.id).toBe(leased);
+    expect(await queue.depth()).toEqual({ ready: 1, delayed: 1, leased: 1 });
+  });
 });
