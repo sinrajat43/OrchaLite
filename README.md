@@ -405,6 +405,8 @@ Both can run at once. A separate worktree keeps `npm run start:dev` from
 rebuilding the code under a running demo. Cloudflare terminates HTTPS and can
 see the traffic, so keep real credentials out of the demo's connections.
 
+[docs/remote-demo.md](docs/remote-demo.md) explains how it works, with diagrams.
+
 ## Project Structure
 
 ```
