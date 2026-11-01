@@ -4,6 +4,16 @@ This directory contains useful scripts for testing and working with OrchaLite.
 
 ## Available Scripts
 
+### demo.sh
+
+Runs a password-protected demo and opens it through a Cloudflare quick tunnel.
+See "Remote demo" in the main README.
+
+### seed-demo.js
+
+Stores the example workflows through the API. `demo.sh` runs it; it is safe to
+rerun.
+
 ### test-workflows.sh
 
 A collection of curl commands to test different workflow scenarios:

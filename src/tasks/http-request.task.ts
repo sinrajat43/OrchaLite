@@ -3,6 +3,7 @@ import { Static, Type } from '@sinclair/typebox';
 import { Task, TaskContext, TerminalTaskError } from './task.interface';
 import { TaskHandler } from './task-handler.decorator';
 import { ConnectionParam, isTerminalStatus, requireUrlOrConnection, resolveTarget } from './http-connection';
+import { outboundConfig } from './outbound-guard';
 
 const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD'] as const;
 const READ_METHODS: string[] = ['GET', 'HEAD'];
@@ -76,6 +77,7 @@ export class HttpRequestTask implements Task<HttpRequestParams, HttpResponse> {
         signal,
         // Every status is a response here; throwOnError decides what a failure is
         validateStatus: () => true,
+        ...outboundConfig(url),
       });
     } catch (error) {
       const message = `${method} ${shown} failed: ${(error as Error).message}`;

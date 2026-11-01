@@ -3,6 +3,7 @@ import { Static, Type } from '@sinclair/typebox';
 import { Task, TaskContext, TerminalTaskError } from './task.interface';
 import { TaskHandler } from './task-handler.decorator';
 import { ConnectionParam, isTerminalStatus, requireUrlOrConnection, resolveTarget } from './http-connection';
+import { outboundConfig } from './outbound-guard';
 
 const NotifyWebhookParamsSchema = Type.Object(
   {
@@ -41,6 +42,7 @@ export class NotifyWebhookTask implements Task<NotifyWebhookParams, NotifyWebhoo
         params: query,
         timeout: timeoutMs,
         signal,
+        ...outboundConfig(url),
       });
       return { status: response.status };
     } catch (error) {

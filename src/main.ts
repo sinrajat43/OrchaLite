@@ -25,7 +25,8 @@ async function bootstrap() {
   }
 
   const port = Number(roles.includes('api') ? process.env.PORT : process.env.ORCHALITE_METRICS_PORT) || 3000;
-  await app.listen(port);
-  console.log(`OrchaLite is running on http://localhost:${port} as ${roles.join(', ')}`);
+  // HOST=127.0.0.1 keeps it off the network, for when a tunnel is the only way in
+  await (process.env.HOST ? app.listen(port, process.env.HOST) : app.listen(port));
+  console.log(`OrchaLite is running on http://${process.env.HOST ?? 'localhost'}:${port} as ${roles.join(', ')}`);
 }
 bootstrap();

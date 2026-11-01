@@ -374,6 +374,36 @@ Any of them can be killed at any time without losing work.
 | `ORCHALITE_EVENTS_WEBHOOK_URL` | none | Where the outbox publishes run events |
 | `ORCHALITE_TRACES` | none | `otlp` (using `OTEL_EXPORTER_OTLP_ENDPOINT`) or `console` |
 | `ORCHALITE_METRICS_PORT` | none | Serves `/metrics` from a process with no API role |
+| `HOST` | all interfaces | The address to listen on; `127.0.0.1` keeps the app off the network |
+| `ORCHALITE_DEMO_PASSWORD` | none | Puts Basic Auth (any username) over the API and UI, except `POST /hooks/:name` and `POST /inbox/:channel` |
+| `ORCHALITE_BLOCK_PRIVATE_NETWORK` | none | Stops `http.request` and `notify.webhook` reaching this machine or a private network |
+
+## Remote demo
+
+`scripts/demo.sh` shows this checkout to other people from your own machine, with
+no hosting and no open ports. It needs `mongod` running and
+`brew install cloudflared`.
+
+```bash
+git worktree add --detach .claude/worktrees/demo main
+cd .claude/worktrees/demo && npm ci
+./scripts/demo.sh
+```
+
+It prints a public `https://<random>.trycloudflare.com` URL and a new password,
+and Ctrl-C stops everything. Open the demo through that URL rather than
+`localhost`: the UI builds inbox URLs from the address it was opened on, and
+private addresses are blocked.
+
+| | Local development | Demo |
+| --- | --- | --- |
+| Port | 3000, on all interfaces | 3001 (`DEMO_PORT`), on `127.0.0.1` only |
+| Database | `MONGODB_URI` | `orchalite-demo` (`DEMO_MONGODB_URI`) |
+| Password and private network block | Off | On |
+
+Both can run at once. A separate worktree keeps `npm run start:dev` from
+rebuilding the code under a running demo. Cloudflare terminates HTTPS and can
+see the traffic, so keep real credentials out of the demo's connections.
 
 ## Project Structure
 
